@@ -256,13 +256,26 @@ function renderGroupTabs() {
     groupNames.push(state.currentGroup);
   }
 
-  let html = `<button class="group-tab ${state.currentGroup === '' ? 'active' : ''}" data-group="">全部 <span class="gt-count">${total}</span></button>`;
-  for (const name of groupNames) {
+  // 单个标签：managed=true 时附加重命名/删除操作（悬停显示），「未分组」与「⚠ 离线」不可管理
+  const tabHTML = (name, count, opts) => {
     const active = state.currentGroup === name;
-    html += `<button class="group-tab ${active ? 'active' : ''}" data-group="${escapeHtml(name)}">${escapeHtml(name)} <span class="gt-count">${groupCounts[name]}</span></button>`;
+    const cls = ['group-tab', active ? 'active' : '', opts && opts.offline ? 'offline' : ''].join(' ').trim();
+    const btn = `<button class="${cls}" data-group="${escapeHtml(name)}">${escapeHtml(name)} <span class="gt-count">${count}</span></button>`;
+    if (opts && opts.managed) {
+      const acts = `<span class="gt-acts">
+        <span class="gt-act" data-act="rename" data-group="${escapeHtml(name)}" title="重命名分组">✎</span>
+        <span class="gt-act" data-act="delete" data-group="${escapeHtml(name)}" title="删除分组（成员移回未分组）">✕</span>
+      </span>`;
+      return `<span class="group-tab-wrap">${btn}${acts}</span>`;
+    }
+    return btn;
+  };
+
+  let html = tabHTML('', total, {});
+  for (const name of groupNames) {
+    html += tabHTML(name, groupCounts[name], { managed: name !== '未分组' });
   }
-  const offActive = state.currentGroup === OFFLINE_GROUP;
-  html += `<button class="group-tab offline ${offActive ? 'active' : ''}" data-group="${escapeHtml(OFFLINE_GROUP)}">${escapeHtml(OFFLINE_GROUP)} <span class="gt-count">${offlineCount}</span></button>`;
+  html += tabHTML(OFFLINE_GROUP, offlineCount, { offline: true });
 
   el.innerHTML = html;
   el.querySelectorAll('.group-tab').forEach(btn => {
@@ -271,6 +284,60 @@ function renderGroupTabs() {
       requestRender();
     };
   });
+  el.querySelectorAll('.gt-act').forEach(act => {
+    act.onclick = () => {
+      const g = act.dataset.group;
+      if (act.dataset.act === 'rename') groupRename(g);
+      else groupDelete(g);
+    };
+  });
+}
+
+// 重命名分组：改名会作用于该分组下的全部客户端
+async function groupRename(oldName) {
+  const input = prompt('重命名分组「' + oldName + '」\n将把该分组下的所有客户端移动到新分组：', oldName);
+  if (input === null) return;
+  const newName = input.trim();
+  if (newName === '' || newName === oldName) return;
+  if (newName === OFFLINE_GROUP) { alert('该名称保留给离线分组，不可使用'); return; }
+  try {
+    const r = await fetch('/api/groups/' + encodeURIComponent(oldName), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName }),
+    });
+    if (!r.ok) { alert('重命名失败：HTTP ' + r.status); return; }
+    if (state.currentGroup === oldName) state.currentGroup = newName;
+    await refreshAgents();
+  } catch (e) {
+    alert('重命名失败：' + e.message);
+  }
+}
+
+// 删除分组：成员移回「未分组」，不会被删除
+async function groupDelete(name) {
+  if (!confirm('确定删除分组「' + name + '」？\n该分组下的所有客户端将移回「未分组」（不会被删除）。')) return;
+  try {
+    const r = await fetch('/api/groups/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!r.ok) { alert('删除失败：HTTP ' + r.status); return; }
+    if (state.currentGroup === name) state.currentGroup = '';
+    await refreshAgents();
+  } catch (e) {
+    alert('删除失败：' + e.message);
+  }
+}
+
+// 立即从 REST 拉取最新全量列表（分组改名/删除后保证界面即时刷新，不依赖 WS 推送时序）
+async function refreshAgents() {
+  try {
+    const r = await fetch('/api/agents');
+    if (r.ok) {
+      const list = await r.json();
+      state.agents = list;
+      updateHistory(list);
+      requestRender();
+    }
+  } catch (e) {}
 }
 
 // 单张卡片 HTML（分组由渲染层统一处理，这里只画卡片本身）

@@ -238,6 +238,61 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// 离线分组是前端虚拟分组，不对应任何真实 group_name，禁止当作真实分组增删改
+const reservedOfflineGroup = "⚠ 离线"
+
+// renameGroupHandler 重命名分组：把所有 group_name=oldName 的客户端改成新名字
+func renameGroupHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		oldName := mux.Vars(r)["name"]
+		if oldName == "" || oldName == reservedOfflineGroup {
+			http.Error(w, "invalid group", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		newName := strings.TrimSpace(req.Name)
+		if newName == "" || newName == reservedOfflineGroup || strings.ContainsAny(newName, "/\\") {
+			http.Error(w, "invalid new name", http.StatusBadRequest)
+			return
+		}
+		n, err := RenameGroup(db, oldName, newName)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		live.RenameGroup(oldName, newName)
+		broadcastAgents(hub)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "affected": n, "old": oldName, "new": newName})
+	}
+}
+
+// deleteGroupHandler 删除分组：把该分组下所有客户端移回「未分组」（group_name 置空）
+func deleteGroupHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := mux.Vars(r)["name"]
+		if name == "" || name == reservedOfflineGroup {
+			http.Error(w, "invalid group", http.StatusBadRequest)
+			return
+		}
+		n, err := DeleteGroup(db, name)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		live.DeleteGroup(name)
+		broadcastAgents(hub)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "affected": n, "name": name})
+	}
+}
+
 // requireAgentToken 校验 Agent Token（兼容 Authorization: Bearer <token> 或 ?token= 查询参数）
 func requireAgentToken(cfg *Config, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -356,6 +411,9 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/agents", requireLogin(db, agentsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/agents/{uuid}/alias", requireLogin(db, aliasHandler(db))).Methods("PUT")
 	r.HandleFunc("/api/agents/{uuid}", requireLogin(db, updateAgentHandler(db))).Methods("PATCH")
+	// 分组级管理：重命名 / 删除（删除会把成员移回「未分组」）
+	r.HandleFunc("/api/groups/{name}", requireLogin(db, renameGroupHandler(db, hub))).Methods("PATCH")
+	r.HandleFunc("/api/groups/{name}", requireLogin(db, deleteGroupHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}", requireAgentToken(cfg, deleteAgentHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}/traffic", requireLogin(db, trafficHandler(db))).Methods("GET")
 	r.HandleFunc("/ws/agent", agentWSHandler(cfg, db, hub))

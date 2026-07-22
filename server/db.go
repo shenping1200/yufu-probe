@@ -215,6 +215,26 @@ func DeleteAgent(db *sql.DB, uuid string) error {
 	return nil
 }
 
+// RenameGroup 把所有 group_name=oldName 的客户端改成 newName，返回受影响行数。
+func RenameGroup(db *sql.DB, oldName, newName string) (int64, error) {
+	res, err := db.Exec(`UPDATE agents SET group_name=? WHERE group_name=?`, newName, oldName)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// DeleteGroup 把所有 group_name=name 的客户端的 group_name 置空（移回「未分组」），返回受影响行数。
+func DeleteGroup(db *sql.DB, name string) (int64, error) {
+	res, err := db.Exec(`UPDATE agents SET group_name='' WHERE group_name=?`, name)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // GetTrafficHistory 返回某机器各自然月流量历史
 func GetTrafficHistory(db *sql.DB, uuid string) ([]MonthlyTraffic, error) {
 	rows, err := db.Query(`SELECT year_month, rx_total, tx_total, updated_at FROM traffic_monthly WHERE uuid=? ORDER BY year_month`, uuid)

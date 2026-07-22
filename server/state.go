@@ -135,6 +135,36 @@ func (s *ServerState) Remove(uuid string) {
 	s.mu.Unlock()
 }
 
+// RenameGroup 重命名分组：内存态中所有 Group==oldName 的客户端改为 newName，返回受影响数。
+func (s *ServerState) RenameGroup(oldName, newName string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, a := range s.agents {
+		if a.Group == oldName {
+			a.Group = newName
+			s.dirty[a.UUID] = true
+			n++
+		}
+	}
+	return n
+}
+
+// DeleteGroup 删除分组：内存态中所有 Group==name 的客户端置空（移回「未分组」），返回受影响数。
+func (s *ServerState) DeleteGroup(name string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, a := range s.agents {
+		if a.Group == name {
+			a.Group = ""
+			s.dirty[a.UUID] = true
+			n++
+		}
+	}
+	return n
+}
+
 // Snapshot 返回当前全部机器的副本（用于广播 / REST）
 func (s *ServerState) Snapshot() []AgentRow {
 	s.mu.RLock()

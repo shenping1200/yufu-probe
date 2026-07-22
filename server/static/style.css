@@ -330,6 +330,20 @@ body.light .modal-box input[type=date] { color-scheme: light; }
 .group-tab.offline.active { background: var(--danger); border-color: var(--danger); color: #fff; }
 .group-tab.offline.active .gt-count { background: rgba(255,255,255,.25); color: #fff; }
 
+/* 自定义分组标签：悬停显示的重命名/删除操作 */
+.group-tab-wrap { display: inline-flex; align-items: center; }
+.gt-acts {
+  display: none; align-items: center; gap: 2px; margin-left: 4px;
+}
+.group-tab-wrap:hover .gt-acts { display: inline-flex; }
+.gt-act {
+  cursor: pointer; font-size: 12px; line-height: 1;
+  padding: 3px 5px; border-radius: 6px; color: var(--text-2);
+}
+.gt-act:hover { color: var(--primary); background: var(--bg-3); }
+.group-tab.offline + .gt-acts .gt-act:hover,
+.group-tab-wrap:hover .gt-act[data-act="delete"]:hover { color: var(--danger); }
+
 /* 空分组提示 */
 .empty-tip {
   grid-column: 1 / -1;
