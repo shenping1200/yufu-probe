@@ -53,6 +53,33 @@ ok "compose  : $COMPOSE"
 #      导致端口/挂载全错、服务起不来。新 UI 已通过 embed 打进镜像，
 #      拉新镜像即可拿到，无需动本机文件。
 
+# ---------- 0. 兼容旧版（build 式）compose：转成 image 式 ----------
+# 早期安装脚本生成的是 build: 本地编译式 compose，没有 image: 字段，
+# 此时 docker compose pull 会直接 "Skipped No image to be pulled"，升级无效。
+# 这里把 build: 换成预编译镜像，并补上配置挂载（保留本机端口/账号/Token）。
+if grep -q "build:" docker-compose.yml 2>/dev/null; then
+  info "检测到旧版 build 式 compose，自动转换为预编译镜像方式..."
+  python3 - <<'PY'
+import os
+p = 'docker-compose.yml'
+s = open(p).read()
+old_build = "    build:\n      context: .\n      dockerfile: Dockerfile.server\n"
+new_image = "    image: ghcr.io/shenping1200/yufu-probe:latest\n"
+if old_build in s:
+    s = s.replace(old_build, new_image, 1)
+    mount = "      - ./configs/server.yaml:/app/configs/server.yaml:ro\n"
+    if mount.strip() not in s and os.path.exists('configs/server.yaml'):
+        s = s.replace("      - probe-data:/app/data\n",
+                      mount + "      - probe-data:/app/data\n", 1)
+    open(p, 'w').write(s)
+    print("已转换：build -> image: ghcr.io/shenping1200/yufu-probe:latest，并挂载本机 server.yaml")
+else:
+    print("WARN: compose 含 build: 但格式无法自动识别，请手动把 server 服务的 build: 替换为：")
+    print("  image: ghcr.io/shenping1200/yufu-probe:latest")
+PY
+  if [ $? -ne 0 ]; then warn "compose 转换失败，将继续尝试（若升级无效请检查 docker-compose.yml）"; fi
+fi
+
 # ---------- 1. 拉取最新预编译镜像 ----------
 info "拉取最新 GHCR 预编译镜像..."
 if $COMPOSE pull server; then
