@@ -233,7 +233,6 @@ function renderCard() {
           <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/到期">✎</button>
         </div>
         <div class="card-status">
-          ${cdBadge}
           <span class="dot ${a.online ? 'on' : 'off'}"></span>
           <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
         </div>
@@ -243,7 +242,10 @@ function renderCard() {
         <span>📍 ${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}</span>
         <span>⏱️ ${fmtUptime(a.uptime)}</span>
       </div>
-      <div class="card-config">${escapeHtml(fmtConfig(a))}</div>
+      <div class="card-config">
+        <span class="card-config-text">${escapeHtml(fmtConfig(a))}</span>
+        ${cdBadge}
+      </div>
       ${a.remark ? `<div class="card-remark">📝 ${escapeHtml(a.remark)}</div>` : ''}
       <div class="card-metrics">
         <div class="metric">
