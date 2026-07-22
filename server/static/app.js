@@ -8,6 +8,8 @@ const state = {
   currentUUID: null,
   theme: localStorage.getItem('probe-theme') || 'dark',
   viewMode: localStorage.getItem('probe-view') || 'card',
+  // 当前选中的分组筛选（'' = 全部，'⚠ 离线' = 离线，否则为自定义组名）
+  currentGroup: '',
 };
 let chart = null;
 
@@ -183,6 +185,7 @@ function fmtConfig(a) {
 
 // ---------- 渲染 ----------
 function render() {
+  renderGroupTabs();
   renderSummary();
   if (state.viewMode === 'list') {
     renderList();
@@ -220,20 +223,54 @@ function renderSummary() {
   document.getElementById('sumTxRate').textContent = fmtRate(txRate);
 }
 
-// ---------- 分组 ----------
+// ---------- 分组（顶部筛选标签条） ----------
+// 分组模型：在线客户端按自定义分组（空则为「未分组」），离线客户端自动归入「⚠ 离线」
 const OFFLINE_GROUP = '⚠ 离线';
-// 按分组聚合：在线客户端按自定义分组（空则为「未分组」），离线客户端自动归入「离线」分组
-function buildGroups() {
-  const map = {};
+
+// 根据当前选中的分组筛选可见客户端
+// state.currentGroup: '' = 全部；OFFLINE_GROUP = 离线；其余为自定义组名
+function filteredAgents() {
+  const g = state.currentGroup;
+  if (!g) return state.agents;
+  if (g === OFFLINE_GROUP) return state.agents.filter(a => !a.online);
+  return state.agents.filter(a => a.online && a.group === g);
+}
+
+// 渲染顶部筛选标签条：全部(总数) / 各自定义组(数量) / ⚠ 离线(数量)
+function renderGroupTabs() {
+  const el = document.getElementById('groupTabs');
+  const total = state.agents.length;
+  const offlineCount = state.agents.filter(a => !a.online).length;
+
+  // 在线分组计数
+  const groupCounts = {};
   for (const a of state.agents) {
-    const g = a.online ? (a.group || '未分组') : OFFLINE_GROUP;
-    (map[g] || (map[g] = [])).push(a);
+    if (a.online) {
+      const g = a.group || '未分组';
+      groupCounts[g] = (groupCounts[g] || 0) + 1;
+    }
   }
-  const names = Object.keys(map)
-    .filter(g => g !== OFFLINE_GROUP)
-    .sort((x, y) => x.localeCompare(y, 'zh'));
-  if (map[OFFLINE_GROUP]) names.push(OFFLINE_GROUP);
-  return { map, names };
+  // 按名称排序；若当前选中的自定义组已无成员（例如刚被改名/移走），仍保留标签以免丢失高亮
+  const groupNames = Object.keys(groupCounts).sort((x, y) => x.localeCompare(y, 'zh'));
+  if (state.currentGroup && state.currentGroup !== OFFLINE_GROUP && !groupCounts[state.currentGroup]) {
+    groupNames.push(state.currentGroup);
+  }
+
+  let html = `<button class="group-tab ${state.currentGroup === '' ? 'active' : ''}" data-group="">全部 <span class="gt-count">${total}</span></button>`;
+  for (const name of groupNames) {
+    const active = state.currentGroup === name;
+    html += `<button class="group-tab ${active ? 'active' : ''}" data-group="${escapeHtml(name)}">${escapeHtml(name)} <span class="gt-count">${groupCounts[name]}</span></button>`;
+  }
+  const offActive = state.currentGroup === OFFLINE_GROUP;
+  html += `<button class="group-tab offline ${offActive ? 'active' : ''}" data-group="${escapeHtml(OFFLINE_GROUP)}">${escapeHtml(OFFLINE_GROUP)} <span class="gt-count">${offlineCount}</span></button>`;
+
+  el.innerHTML = html;
+  el.querySelectorAll('.group-tab').forEach(btn => {
+    btn.onclick = () => {
+      state.currentGroup = btn.dataset.group;
+      requestRender();
+    };
+  });
 }
 
 // 单张卡片 HTML（分组由渲染层统一处理，这里只画卡片本身）
@@ -305,12 +342,11 @@ function cardHTML(a) {
 
 function renderCard() {
   const grid = document.getElementById('agentsGrid');
-  const { map, names } = buildGroups();
+  const list = filteredAgents();
   let html = '';
-  for (const name of names) {
-    const list = map[name];
-    const isOffline = name === OFFLINE_GROUP;
-    html += `<div class="group-header ${isOffline ? 'group-offline' : ''}"><span class="group-name">${escapeHtml(name)}</span><span class="group-count">${list.length}</span></div>`;
+  if (list.length === 0) {
+    html = `<div class="empty-tip">该分组下暂无客户端</div>`;
+  } else {
     for (const a of list) html += cardHTML(a);
   }
   grid.innerHTML = html;
@@ -405,12 +441,11 @@ function listRowHTML(a) {
 
 function renderList() {
   const table = document.getElementById('agentsTable');
-  const { map, names } = buildGroups();
+  const list = filteredAgents();
   let rows = '';
-  for (const name of names) {
-    const list = map[name];
-    const isOffline = name === OFFLINE_GROUP;
-    rows += `<tr class="group-row ${isOffline ? 'group-offline' : ''}"><td colspan="9"><span class="group-name">${escapeHtml(name)}</span><span class="group-count">${list.length}</span></td></tr>`;
+  if (list.length === 0) {
+    rows = `<tr><td colspan="9" class="empty-tip">该分组下暂无客户端</td></tr>`;
+  } else {
     for (const a of list) rows += listRowHTML(a);
   }
   table.innerHTML = `

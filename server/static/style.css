@@ -302,25 +302,45 @@ body.light .modal-box input[type=date] { color-scheme: light; }
 .cd-text.soon    { color: var(--warning); }
 .cd-text.expired { color: var(--danger); font-weight: 700; }
 
-/* ---------- 分组（卡片 + 列表共用） ---------- */
-.group-header {
-  display: flex; align-items: center; gap: 8px;
-  margin: 16px 2px 8px; padding-left: 8px;
-  border-left: 3px solid var(--primary);
-  font-size: 14px; font-weight: 700; color: var(--text);
+/* ---------- 分组（顶部筛选标签条，参考"炸酱面探针"） ---------- */
+.group-tabs {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  padding: 0 28px 18px; align-items: center;
 }
-.group-header .group-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.group-header .group-count {
-  font-size: 12px; font-weight: 600; color: var(--text-2);
-  background: var(--bg-3); border-radius: 10px; padding: 1px 8px;
+.group-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 14px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 20px;
+  background: var(--bg-2); color: var(--text-2); cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
 }
-.group-header.group-offline { border-left-color: var(--danger); color: var(--danger); }
+.group-tab:hover { border-color: var(--primary); color: var(--text); }
+.group-tab .gt-count {
+  font-size: 11px; font-weight: 700; line-height: 1;
+  background: var(--bg-3); color: var(--text-2);
+  border-radius: 10px; padding: 2px 7px; min-width: 18px; text-align: center;
+}
+.group-tab.active {
+  background: var(--primary); border-color: var(--primary); color: #fff;
+}
+.group-tab.active .gt-count { background: rgba(255,255,255,.22); color: #fff; }
+.group-tab.offline { color: var(--danger); border-color: rgba(248,81,73,.4); }
+.group-tab.offline .gt-count { background: rgba(248,81,73,.18); color: var(--danger); }
+.group-tab.offline:hover { border-color: var(--danger); color: var(--danger); }
+.group-tab.offline.active { background: var(--danger); border-color: var(--danger); color: #fff; }
+.group-tab.offline.active .gt-count { background: rgba(255,255,255,.25); color: #fff; }
+
+/* 空分组提示 */
+.empty-tip {
+  grid-column: 1 / -1;
+  text-align: center; color: var(--text-2); font-size: 14px;
+  padding: 48px 0;
+}
+.agents-table .empty-tip { padding: 40px 0; text-align: center; }
 
 .card-group { font-size: 11px; color: var(--text-2); margin-right: 6px; }
 
-.agents-table tr.group-row td {
-  background: var(--bg-3);
-  font-weight: 700; color: var(--text);
-  padding: 8px 10px;
+@media (max-width: 640px) {
+  .group-tabs { padding: 0 14px 14px; gap: 8px; }
+  .group-tab { padding: 6px 12px; font-size: 12px; }
 }
-.agents-table tr.group-row.group-offline td { color: var(--danger); }
