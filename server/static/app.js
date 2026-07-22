@@ -611,13 +611,16 @@ function listRowHTML(a) {
   const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
   const loc = a.country ? (a.country.replace(stripFlagEmoji(a.country) || '', '').trim()) : '';
   const flagImg = flagImage(a.country_code, loc);
+  // IP 列：优先显示公网 IP（与国旗/国家一致，便于实际访问），缺失时回退本机 IP 并标"内网"
+  const displayIP = a.public_ip || a.ip;
+  const ipNote = !a.public_ip && isPrivateIP(a.ip) ? ' <span style="color:var(--text-2);font-size:11px">(内网)</span>' : '';
   const cd = fmtCountdown(a.expire_at);
   const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
   return `
     <tr>
       <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
       <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
-      <td><span class="flag">${flagImg}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br><span style="color:var(--text-2);font-size:12px">${escapeHtml(a.ip)}</span></td>
+      <td><span class="flag">${flagImg}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br><span style="color:var(--text-2);font-size:12px">${escapeHtml(displayIP)}${ipNote}</span></td>
       <td>${escapeHtml(fmtConfig(a))}</td>
       <td>${fmtUptime(a.uptime)}${cdHtml}</td>
       <td>
