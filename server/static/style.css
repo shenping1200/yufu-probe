@@ -301,3 +301,26 @@ body.light .modal-box input[type=date] { color-scheme: light; }
 }
 .cd-text.soon    { color: var(--warning); }
 .cd-text.expired { color: var(--danger); font-weight: 700; }
+
+/* ---------- 分组（卡片 + 列表共用） ---------- */
+.group-header {
+  display: flex; align-items: center; gap: 8px;
+  margin: 16px 2px 8px; padding-left: 8px;
+  border-left: 3px solid var(--primary);
+  font-size: 14px; font-weight: 700; color: var(--text);
+}
+.group-header .group-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-header .group-count {
+  font-size: 12px; font-weight: 600; color: var(--text-2);
+  background: var(--bg-3); border-radius: 10px; padding: 1px 8px;
+}
+.group-header.group-offline { border-left-color: var(--danger); color: var(--danger); }
+
+.card-group { font-size: 11px; color: var(--text-2); margin-right: 6px; }
+
+.agents-table tr.group-row td {
+  background: var(--bg-3);
+  font-weight: 700; color: var(--text);
+  padding: 8px 10px;
+}
+.agents-table tr.group-row.group-offline td { color: var(--danger); }

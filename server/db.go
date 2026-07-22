@@ -33,6 +33,7 @@ type AgentRow struct {
 	OS          string  `json:"os"`
 	Platform    string  `json:"platform"`
 	Remark      string  `json:"remark"`
+	Group       string  `json:"group"`
 	RxMonth     float64 `json:"rx_month"`
 	TxMonth     float64 `json:"tx_month"`
 	// ExpireAt VPS 到期时间（Unix 秒）。为 nil 表示未设置。
@@ -111,26 +112,31 @@ func InitDB(path string) (*sql.DB, error) {
 	db.Exec(`ALTER TABLE agents ADD COLUMN platform TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE agents ADD COLUMN remark TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE agents ADD COLUMN expire_at INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE agents ADD COLUMN group_name TEXT DEFAULT ''`)
 	return db, nil
 }
 
-// UpsertAgent 写入/更新机器的实时状态
+// UpsertAgent 写入/更新机器的实时状态（落库用，在线状态以 a.Online 为准）
 func UpsertAgent(db *sql.DB, a AgentRow) error {
 	now := time.Now().Unix()
+	online := 0
+	if a.Online {
+		online = 1
+	}
 	_, err := db.Exec(`INSERT INTO agents
 		(uuid, alias, hostname, ip, boot_time, uptime, cpu, cpu_count, mem_used, mem_total, disk_used, disk_total, rx_rate, tx_rate, online, last_seen, created_at, country, country_code, os, platform)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(uuid) DO UPDATE SET
 			hostname=excluded.hostname, ip=excluded.ip, boot_time=excluded.boot_time, uptime=excluded.uptime,
 			cpu=excluded.cpu, cpu_count=excluded.cpu_count, mem_used=excluded.mem_used, mem_total=excluded.mem_total,
 			disk_used=excluded.disk_used, disk_total=excluded.disk_total,
-			rx_rate=excluded.rx_rate, tx_rate=excluded.tx_rate, online=1, last_seen=excluded.last_seen,
+			rx_rate=excluded.rx_rate, tx_rate=excluded.tx_rate, online=excluded.online, last_seen=excluded.last_seen,
 			country = CASE WHEN excluded.country='' THEN agents.country ELSE excluded.country END,
 			country_code = CASE WHEN excluded.country_code='' THEN agents.country_code ELSE excluded.country_code END,
 			os = CASE WHEN excluded.os='' THEN agents.os ELSE excluded.os END,
 			platform = CASE WHEN excluded.platform='' THEN agents.platform ELSE excluded.platform END`,
 		a.UUID, a.Alias, a.Hostname, a.IP, a.BootTime, a.Uptime, a.CPU, a.CPUCount, a.MemUsed, a.MemTotal,
-		a.DiskUsed, a.DiskTotal, a.RxRate, a.TxRate, now, now, a.Country, a.CountryCode, a.OS, a.Platform)
+		a.DiskUsed, a.DiskTotal, a.RxRate, a.TxRate, online, now, a.CreatedAt, a.Country, a.CountryCode, a.OS, a.Platform)
 	return err
 }
 
@@ -156,7 +162,7 @@ func SetAlias(db *sql.DB, uuid, alias string) error {
 // ListAgents 返回所有机器，带当前自然月累计流量
 func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 	rows, err := db.Query(`SELECT a.uuid, a.alias, a.hostname, a.ip, a.boot_time, a.uptime,
-		a.cpu, a.cpu_count, a.mem_used, a.mem_total, a.disk_used, a.disk_total, a.rx_rate, a.tx_rate, a.online, a.last_seen, a.created_at, a.country, a.country_code, a.os, a.platform, a.remark, a.expire_at,
+		a.cpu, a.cpu_count, a.mem_used, a.mem_total, a.disk_used, a.disk_total, a.rx_rate, a.tx_rate, a.online, a.last_seen, a.created_at, a.country, a.country_code, a.os, a.platform, a.remark, a.group_name, a.expire_at,
 		COALESCE(t.rx_total,0), COALESCE(t.tx_total,0)
 		FROM agents a
 		LEFT JOIN traffic_monthly t ON a.uuid=t.uuid AND t.year_month=?
@@ -172,7 +178,7 @@ func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 		var expireAt sql.NullInt64
 		if err := rows.Scan(&a.UUID, &a.Alias, &a.Hostname, &a.IP, &a.BootTime, &a.Uptime,
 			&a.CPU, &a.CPUCount, &a.MemUsed, &a.MemTotal, &a.DiskUsed, &a.DiskTotal, &a.RxRate, &a.TxRate,
-			&online, &a.LastSeen, &a.CreatedAt, &a.Country, &a.CountryCode, &a.OS, &a.Platform, &a.Remark, &expireAt,
+			&online, &a.LastSeen, &a.CreatedAt, &a.Country, &a.CountryCode, &a.OS, &a.Platform, &a.Remark, &a.Group, &expireAt,
 			&a.RxMonth, &a.TxMonth); err != nil {
 			return nil, err
 		}
@@ -186,14 +192,14 @@ func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 	return out, nil
 }
 
-// UpdateAgent 更新机器的显示名称(alias)、备注(remark)与到期时间(expireAt)。
+// UpdateAgent 更新机器的显示名称(alias)、备注(remark)、分组(group_name)与到期时间(expireAt)。
 // expireAt 为 nil 表示清空到期时间（设为 NULL）。
-func UpdateAgent(db *sql.DB, uuid, alias, remark string, expireAt *int64) error {
+func UpdateAgent(db *sql.DB, uuid, alias, remark, group string, expireAt *int64) error {
 	var v sql.NullInt64
 	if expireAt != nil {
 		v = sql.NullInt64{Int64: *expireAt, Valid: true}
 	}
-	_, err := db.Exec(`UPDATE agents SET alias=?, remark=?, expire_at=? WHERE uuid=?`, alias, remark, v, uuid)
+	_, err := db.Exec(`UPDATE agents SET alias=?, remark=?, group_name=?, expire_at=? WHERE uuid=?`, alias, remark, group, v, uuid)
 	return err
 }
 
@@ -225,13 +231,4 @@ func GetTrafficHistory(db *sql.DB, uuid string) ([]MonthlyTraffic, error) {
 		out = append(out, m)
 	}
 	return out, nil
-}
-
-// offlineScanner 定期把超时未上报的机器标记为离线
-func offlineScanner(db *sql.DB) {
-	ticker := time.NewTicker(10 * time.Second)
-	for range ticker.C {
-		now := time.Now().Unix()
-		db.Exec(`UPDATE agents SET online=0 WHERE online=1 AND last_seen < ?`, now-15)
-	}
 }

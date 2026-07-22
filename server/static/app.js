@@ -105,8 +105,7 @@ function connectWS() {
     if (msg.type === 'agents') {
       state.agents = msg.data;
       updateHistory(msg.data);
-      render();
-      if (state.currentUUID) drawDetail();
+      requestRender();
     }
   };
   ws.onclose = () => {
@@ -192,6 +191,18 @@ function render() {
   }
 }
 
+// requestRender 把多次实时更新合并到下一帧渲染一次，避免高频消息下重复重建 DOM
+let renderPending = false;
+function requestRender() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => {
+    renderPending = false;
+    render();
+    if (state.currentUUID) drawDetail();
+  });
+}
+
 function renderSummary() {
   const total = state.agents.length;
   const online = state.agents.filter(a => a.online).length;
@@ -209,28 +220,40 @@ function renderSummary() {
   document.getElementById('sumTxRate').textContent = fmtRate(txRate);
 }
 
-function renderCard() {
-  const grid = document.getElementById('agentsGrid');
-  grid.innerHTML = '';
+// ---------- 分组 ----------
+const OFFLINE_GROUP = '⚠ 离线';
+// 按分组聚合：在线客户端按自定义分组（空则为「未分组」），离线客户端自动归入「离线」分组
+function buildGroups() {
+  const map = {};
   for (const a of state.agents) {
-    const card = document.createElement('div');
-    card.className = 'agent-card' + (a.online ? '' : ' offline');
-    card.onclick = () => openDetail(a.uuid);
+    const g = a.online ? (a.group || '未分组') : OFFLINE_GROUP;
+    (map[g] || (map[g] = [])).push(a);
+  }
+  const names = Object.keys(map)
+    .filter(g => g !== OFFLINE_GROUP)
+    .sort((x, y) => x.localeCompare(y, 'zh'));
+  if (map[OFFLINE_GROUP]) names.push(OFFLINE_GROUP);
+  return { map, names };
+}
 
-    const alias = a.alias || a.hostname || a.uuid.slice(0, 8);
-    const flag = flagFromCountry(a.country) || '🌍';
-    const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
-    const loc = a.country ? (a.country.replace(flagFromCountry(a.country) || '', '').trim()) : (isPrivateIP(a.ip) ? '内网' : '');
-    const osText = [a.os, a.platform].filter(Boolean).join(' · ') || 'Linux';
+// 单张卡片 HTML（分组由渲染层统一处理，这里只画卡片本身）
+function cardHTML(a) {
+  const alias = a.alias || a.hostname || a.uuid.slice(0, 8);
+  const flag = flagFromCountry(a.country) || '🌍';
+  const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
+  const loc = a.country ? (a.country.replace(flagFromCountry(a.country) || '', '').trim()) : (isPrivateIP(a.ip) ? '内网' : '');
+  const osText = [a.os, a.platform].filter(Boolean).join(' · ') || 'Linux';
 
-    const cd = fmtCountdown(a.expire_at);
-    const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
-    card.innerHTML = `
+  const cd = fmtCountdown(a.expire_at);
+  const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
+  const groupBadge = a.group ? `<span class="card-group" title="分组">🏷️ ${escapeHtml(a.group)}</span>` : '';
+  return `
+    <div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${a.uuid}">
       <div class="card-header">
         <div class="card-title">
           <span class="flag">${flag}</span>
           <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
-          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/到期">✎</button>
+          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button>
         </div>
         <div class="card-status">
           <span class="dot ${a.online ? 'on' : 'off'}"></span>
@@ -246,7 +269,7 @@ function renderCard() {
         <span class="card-config-text">${escapeHtml(fmtConfig(a))}</span>
         ${cdBadge}
       </div>
-      ${a.remark ? `<div class="card-remark">📝 ${escapeHtml(a.remark)}</div>` : ''}
+      ${groupBadge ? `<div class="card-remark">${groupBadge}${a.remark ? ' 📝 ' + escapeHtml(a.remark) : ''}</div>` : (a.remark ? `<div class="card-remark">📝 ${escapeHtml(a.remark)}</div>` : '')}
       <div class="card-metrics">
         <div class="metric">
           <div class="metric-label">CPU ${a.cpu.toFixed(1)}%</div>
@@ -277,9 +300,23 @@ function renderCard() {
           <div class="traffic-sub">自然月累计</div>
         </div>
       </div>
-    `;
-    grid.appendChild(card);
+    </div>`;
+}
+
+function renderCard() {
+  const grid = document.getElementById('agentsGrid');
+  const { map, names } = buildGroups();
+  let html = '';
+  for (const name of names) {
+    const list = map[name];
+    const isOffline = name === OFFLINE_GROUP;
+    html += `<div class="group-header ${isOffline ? 'group-offline' : ''}"><span class="group-name">${escapeHtml(name)}</span><span class="group-count">${list.length}</span></div>`;
+    for (const a of list) html += cardHTML(a);
   }
+  grid.innerHTML = html;
+  grid.querySelectorAll('.agent-card').forEach(el => {
+    el.onclick = () => openDetail(el.dataset.uuid);
+  });
   grid.querySelectorAll('.btn-edit').forEach(btn => {
     btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); };
   });
@@ -293,6 +330,7 @@ function openEdit(uuid) {
   if (!a) return;
   editUUID = uuid;
   document.getElementById('editName').value = a.alias || '';
+  document.getElementById('editGroup').value = a.group || '';
   document.getElementById('editRemark').value = a.remark || '';
   // 到期时间：Unix 秒 → YYYY-MM-DD（按本地时区）
   const exp = document.getElementById('editExpire');
@@ -318,6 +356,7 @@ document.getElementById('editModal').addEventListener('click', e => {
 document.getElementById('editSave').onclick = async () => {
   if (!editUUID) return;
   const name = document.getElementById('editName').value;
+  const group = document.getElementById('editGroup').value.trim();
   const remark = document.getElementById('editRemark').value;
   const dateStr = document.getElementById('editExpire').value;
   // 日期 → 该日 23:59:59 的 Unix 秒（按本地时区）
@@ -329,43 +368,51 @@ document.getElementById('editSave').onclick = async () => {
   await fetch('/api/agents/' + editUUID, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, remark, expire_at: expireAt }),
+    body: JSON.stringify({ name, group, remark, expire_at: expireAt }),
   });
   const a = state.agents.find(x => x.uuid === editUUID);
-  if (a) { a.alias = name; a.remark = remark; a.expire_at = expireAt; }
+  if (a) { a.alias = name; a.group = group; a.remark = remark; a.expire_at = expireAt; }
   closeEdit();
   render();
   if (state.currentUUID === editUUID) drawDetail();
 };
 
+function listRowHTML(a) {
+  const alias = a.alias || a.hostname || a.uuid.slice(0, 8);
+  const flag = flagFromCountry(a.country) || '🌍';
+  const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
+  const loc = a.country ? (a.country.replace(flagFromCountry(a.country) || '', '').trim()) : (isPrivateIP(a.ip) ? '内网' : '');
+  const cd = fmtCountdown(a.expire_at);
+  const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
+  return `
+    <tr>
+      <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
+      <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
+      <td><span class="flag">${flag}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br><span style="color:var(--text-2);font-size:12px">${escapeHtml(a.ip)}</span></td>
+      <td>${escapeHtml(fmtConfig(a))}</td>
+      <td>${fmtUptime(a.uptime)}${cdHtml}</td>
+      <td>
+        <div>CPU ${a.cpu.toFixed(1)}% <span class="mini-bar"><div class="bar-cpu" style="width:${percent(a.cpu, 100)}%"></div></span></div>
+        <div style="margin-top:4px">内存 ${percent(a.mem_used, a.mem_total).toFixed(1)}% <span class="mini-bar"><div class="bar-mem" style="width:${percent(a.mem_used, a.mem_total)}%"></div></span></div>
+        <div style="margin-top:4px">磁盘 ${percent(a.disk_used, a.disk_total).toFixed(1)}% <span class="mini-bar"><div class="bar-disk" style="width:${percent(a.disk_used, a.disk_total)}%"></div></span></div>
+      </td>
+      <td><span class="down">↓${fmtRate(a.rx_rate)}</span><br><span class="up">↑${fmtRate(a.tx_rate)}</span></td>
+      <td><span class="down">${fmtBytes(a.rx_month)}</span><br><span class="up">${fmtBytes(a.tx_month)}</span></td>
+      <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button></td>
+    </tr>
+  `;
+}
+
 function renderList() {
   const table = document.getElementById('agentsTable');
-  const rows = state.agents.map(a => {
-    const alias = a.alias || a.hostname || a.uuid.slice(0, 8);
-    const flag = flagFromCountry(a.country) || '🌍';
-    const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
-    const loc = a.country ? (a.country.replace(flagFromCountry(a.country) || '', '').trim()) : (isPrivateIP(a.ip) ? '内网' : '');
-    const cd = fmtCountdown(a.expire_at);
-    const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
-    return `
-      <tr>
-        <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
-        <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
-        <td><span class="flag">${flag}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br><span style="color:var(--text-2);font-size:12px">${escapeHtml(a.ip)}</span></td>
-        <td>${escapeHtml(fmtConfig(a))}</td>
-        <td>${fmtUptime(a.uptime)}${cdHtml}</td>
-        <td>
-          <div>CPU ${a.cpu.toFixed(1)}% <span class="mini-bar"><div class="bar-cpu" style="width:${percent(a.cpu, 100)}%"></div></span></div>
-          <div style="margin-top:4px">内存 ${percent(a.mem_used, a.mem_total).toFixed(1)}% <span class="mini-bar"><div class="bar-mem" style="width:${percent(a.mem_used, a.mem_total)}%"></div></span></div>
-          <div style="margin-top:4px">磁盘 ${percent(a.disk_used, a.disk_total).toFixed(1)}% <span class="mini-bar"><div class="bar-disk" style="width:${percent(a.disk_used, a.disk_total)}%"></div></span></div>
-        </td>
-        <td><span class="down">↓${fmtRate(a.rx_rate)}</span><br><span class="up">↑${fmtRate(a.tx_rate)}</span></td>
-        <td><span class="down">${fmtBytes(a.rx_month)}</span><br><span class="up">${fmtBytes(a.tx_month)}</span></td>
-        <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button></td>
-      </tr>
-    `;
-  }).join('');
-
+  const { map, names } = buildGroups();
+  let rows = '';
+  for (const name of names) {
+    const list = map[name];
+    const isOffline = name === OFFLINE_GROUP;
+    rows += `<tr class="group-row ${isOffline ? 'group-offline' : ''}"><td colspan="9"><span class="group-name">${escapeHtml(name)}</span><span class="group-count">${list.length}</span></td></tr>`;
+    for (const a of list) rows += listRowHTML(a);
+  }
   table.innerHTML = `
     <table>
       <thead>

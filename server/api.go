@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -58,12 +57,11 @@ type AgentReport struct {
 	TxDelta   float64 `json:"tx_delta"`
 }
 
-// broadcastAgents 查询最新机器列表并推送给所有 viewer
-func broadcastAgents(hub *Hub, db *sql.DB) {
-	list, err := ListAgents(db, time.Now().Format("2006-01"))
-	if err != nil {
-		return
-	}
+// broadcastAgents 把当前内存中的全量状态推送给所有 viewer。
+// 由 main.go 的定时 ticker 周期调用（不再在每条上报里调用），
+// 因此广播频率固定为 1 次/秒，与客户端数量解耦。
+func broadcastAgents(hub *Hub) {
+	list := live.Snapshot()
 	payload, err := json.Marshal(map[string]interface{}{"type": "agents", "data": list})
 	if err != nil {
 		return
@@ -158,11 +156,7 @@ func installCommandHandler(cfg *Config) http.HandlerFunc {
 
 func agentsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		list, err := ListAgents(db, time.Now().Format("2006-01"))
-		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
+		list := live.Snapshot()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 	}
@@ -220,6 +214,10 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 		if v, ok := raw["remark"]; ok {
 			_ = json.Unmarshal(v, &remark)
 		}
+		group := ""
+		if v, ok := raw["group"]; ok {
+			_ = json.Unmarshal(v, &group)
+		}
 		var expireAt *int64
 		if v, ok := raw["expire_at"]; ok {
 			// 支持 null（清空）或数字（Unix 秒）
@@ -230,10 +228,11 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 				}
 			}
 		}
-		if err := UpdateAgent(db, uuid, alias, remark, expireAt); err != nil {
+		if err := UpdateAgent(db, uuid, alias, remark, group, expireAt); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		live.UpdateAdmin(uuid, alias, remark, group, expireAt)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
@@ -256,13 +255,15 @@ func requireAgentToken(cfg *Config, next http.HandlerFunc) http.HandlerFunc {
 }
 
 // deleteAgentHandler 删除机器（agent 主动注销或管理员移除，需 Agent Token 鉴权）
-func deleteAgentHandler(db *sql.DB) http.HandlerFunc {
+func deleteAgentHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uuid := mux.Vars(r)["uuid"]
 		if err := DeleteAgent(db, uuid); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		live.Remove(uuid)
+		broadcastAgents(hub)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
@@ -293,12 +294,13 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if err := json.Unmarshal(data, &ctrl); err == nil && ctrl.Action == "unregister" {
 				if ctrl.UUID != "" {
 					DeleteAgent(db, ctrl.UUID)
-					broadcastAgents(hub, db)
+					live.Remove(ctrl.UUID)
+					broadcastAgents(hub)
 					log.Printf("[ws] agent %s 已注销", ctrl.UUID)
 				}
 				return
 			}
-			// 2) 普通状态上报
+			// 2) 普通状态上报：只更新内存，不做 DB 写入、不广播
 			var rep AgentReport
 			if err := json.Unmarshal(data, &rep); err != nil || rep.UUID == "" {
 				continue
@@ -308,22 +310,11 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if geoIP == "" {
 				geoIP = rep.IP
 			}
-		row := AgentRow{
-			UUID: rep.UUID, Hostname: rep.Hostname, IP: rep.IP,
-			OS: rep.OS, Platform: rep.Platform,
-			BootTime: rep.BootTime, Uptime: rep.Uptime, CPU: rep.CPU, CPUCount: rep.CPUCount,
-			MemUsed: rep.MemUsed, MemTotal: rep.MemTotal,
-			DiskUsed: rep.DiskUsed, DiskTotal: rep.DiskTotal,
-			RxRate: rep.RxRate, TxRate: rep.TxRate,
-			Country: lookupCountry(db, geoIP, rep.UUID),
-		}
-			if err := UpsertAgent(db, row); err != nil {
-				continue
+			country := ""
+			if !isPrivateIP(geoIP) {
+				country = lookupCountry(db, geoIP, rep.UUID)
 			}
-			if rep.RxDelta > 0 || rep.TxDelta > 0 {
-				AddTraffic(db, rep.UUID, time.Now().Format("2006-01"), rep.RxDelta, rep.TxDelta)
-			}
-			broadcastAgents(hub, db)
+			live.ApplyReport(rep, country)
 		}
 	}
 }
@@ -347,7 +338,7 @@ func viewerWSHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 			hub.removeViewer(client)
 			conn.Close()
 		}()
-		broadcastAgents(hub, db)
+		broadcastAgents(hub)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
@@ -365,7 +356,7 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/agents", requireLogin(db, agentsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/agents/{uuid}/alias", requireLogin(db, aliasHandler(db))).Methods("PUT")
 	r.HandleFunc("/api/agents/{uuid}", requireLogin(db, updateAgentHandler(db))).Methods("PATCH")
-	r.HandleFunc("/api/agents/{uuid}", requireAgentToken(cfg, deleteAgentHandler(db))).Methods("DELETE")
+	r.HandleFunc("/api/agents/{uuid}", requireAgentToken(cfg, deleteAgentHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}/traffic", requireLogin(db, trafficHandler(db))).Methods("GET")
 	r.HandleFunc("/ws/agent", agentWSHandler(cfg, db, hub))
 	r.HandleFunc("/ws/viewer", viewerWSHandler(db, hub))
