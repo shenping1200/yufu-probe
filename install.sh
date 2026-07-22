@@ -273,7 +273,7 @@ uninstall_server() {
   ok "服务端卸载完成（含容器、数据卷与本机自监控 agent 清理）"
 }
 
-# ---------- 卸载：客户端（自动识别本机 agent 配置，无需手动输入）----------
+# ---------- 卸载：客户端（自动识别本机 agent 配置，绝不手输）----------
 uninstall_client() {
   info "开始卸载客户端（本机 agent）..."
   local CLI_SERVER="" CLI_TOKEN=""
@@ -284,14 +284,25 @@ uninstall_client() {
   fi
   if [[ -n "$CLI_SERVER" && -n "$CLI_TOKEN" ]]; then
     info "已自动识别本机 agent 配置：服务端=$CLI_SERVER（无需手动输入）"
+    local UA_URL="https://raw.githubusercontent.com/shenping1200/yufu-probe/main/uninstall-agent.sh"
+    if curl -fsSL "$UA_URL" -o "/tmp/uninstall-agent.$$.sh" 2>/dev/null; then
+      info "调用 uninstall-agent.sh 清理本机 agent 并通知服务端删除记录..."
+      bash "/tmp/uninstall-agent.$$.sh" "$CLI_SERVER" "$CLI_TOKEN" \
+        || warn "uninstall-agent.sh 返回非0（可能服务端已不可达）；本机 agent 由下方兜底清理，服务端记录可到面板手动删除"
+      rm -f "/tmp/uninstall-agent.$$.sh"
+    else
+      warn "无法下载 uninstall-agent.sh（网络异常），改为仅清理本机 agent"
+    fi
   else
-    warn "未在 $CONF 找到服务端地址或 Token，转为手动输入"
-    read -rp "服务端地址 (例如 ws://1.2.3.4:39689 或 1.2.3.4:39689): " CLI_SERVER || true
-    read -rp "Agent Token: " CLI_TOKEN || true
+    warn "未在 $CONF 找到服务端地址或 Token（agent 可能已被部分清理），仅清理本机 agent 文件与服务"
   fi
-  [[ -z "$CLI_SERVER" || -z "$CLI_TOKEN" ]] && err "缺少服务端地址或 Token，无法卸载客户端"
-  info "调用 uninstall-agent.sh 清理本机 agent 并通知服务端删除记录..."
-  bash <(curl -sSL "https://raw.githubusercontent.com/shenping1200/yufu-probe/main/uninstall-agent.sh") "$CLI_SERVER" "$CLI_TOKEN"
+  # 兜底：无论上述是否成功，都把本机 agent 文件/服务/进程清干净（绝不手输）
+  systemctl stop yufu-agent 2>/dev/null || pkill -f /usr/local/bin/yufu-agent 2>/dev/null || true
+  systemctl disable yufu-agent 2>/dev/null || true
+  rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf
+  rm -rf /var/lib/yufu-agent
+  systemctl daemon-reload 2>/dev/null || true
+  ok "本机 agent 已清理"
 }
 
 # ---------- 卸载：子菜单（含二次确认）----------
@@ -322,7 +333,7 @@ do_uninstall() {
   case "$sub" in
     1) uninstall_server ;;
     2) uninstall_client ;;
-    3) uninstall_server; uninstall_client ;;
+    3) uninstall_client; uninstall_server ;;
   esac
 }
 
