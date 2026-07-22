@@ -344,18 +344,30 @@ body.light .modal-box input[type=date] { color-scheme: light; }
   border-color: var(--primary);
 }
 
-/* 自定义分组标签：悬停显示的重命名/删除操作 */
-.group-tab-wrap { display: inline-flex; align-items: center; }
+/* 自定义分组标签：悬停显示的重命名/删除操作
+   关键：.gt-acts 用 position: absolute 浮在按钮右侧不占文档流，
+   按钮预留 padding-right 兜住它的位置。这样悬停显隐只走 opacity，
+   宽度/布局永不变化，杜绝 "悬停→位移→脱离→回弹" 的闪动死循环。 */
+.group-tab-wrap { position: relative; display: inline-flex; align-items: center; }
+.group-tab-wrap > .group-tab { padding-right: 40px; }
 .gt-acts {
-  display: none; align-items: center; gap: 2px; margin-left: 4px;
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; gap: 1px;
+  background: var(--bg-3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 1px 2px;
+  opacity: 0; pointer-events: none;
+  transition: opacity .12s;
+  z-index: 1;
+  white-space: nowrap;
 }
-.group-tab-wrap:hover .gt-acts { display: inline-flex; }
+.group-tab-wrap:hover .gt-acts { opacity: 1; pointer-events: auto; }
 .gt-act {
   cursor: pointer; font-size: 12px; line-height: 1;
-  padding: 3px 5px; border-radius: 6px; color: var(--text-2);
+  padding: 3px 6px; border-radius: 5px; color: var(--text-2);
+  user-select: none;
+  min-width: 22px; text-align: center;
 }
-.gt-act:hover { color: var(--primary); background: var(--bg-3); }
-.group-tab.offline + .gt-acts .gt-act:hover,
+.gt-act:hover { color: var(--primary); background: var(--bg-2); }
 .group-tab-wrap:hover .gt-act[data-act="delete"]:hover { color: var(--danger); }
 
 /* 空分组提示 */
