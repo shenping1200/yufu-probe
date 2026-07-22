@@ -80,6 +80,7 @@ func (s *ServerState) ApplyReport(rep AgentReport, country string) {
 	}
 	cur.Hostname = rep.Hostname
 	cur.IP = rep.IP
+	cur.PublicIP = rep.PublicIP
 	cur.BootTime = rep.BootTime
 	cur.Uptime = rep.Uptime
 	cur.CPU = rep.CPU

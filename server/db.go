@@ -15,6 +15,7 @@ type AgentRow struct {
 	Alias     string  `json:"alias"`
 	Hostname  string  `json:"hostname"`
 	IP        string  `json:"ip"`
+	PublicIP  string  `json:"public_ip"`
 	BootTime  int64   `json:"boot_time"`
 	Uptime    int64   `json:"uptime"`
 	CPU       float64 `json:"cpu"`
