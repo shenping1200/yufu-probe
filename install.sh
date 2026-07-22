@@ -136,9 +136,13 @@ EOF
 
   if [[ -n "$DOMAIN" ]]; then
     info "生成 Caddy 反向代理配置（HTTP）..."
+    # 注意：Caddy v2 指令为 reverse_proxy（带 y）。
+    # 上游必须用 docker compose 同网络的服务名 server，不能写 127.0.0.1
+    # （127.0.0.1 在 caddy 容器里指代 caddy 自己，不是宿主机/也不是 probe-server）。
     cat > Caddyfile <<EOF
 http://${DOMAIN} {
-    reverse_probe 127.0.0.1:${PORT}
+    # 由 install.sh 生成：反向代理到同 compose 网络的 probe-server
+    reverse_proxy server:${PORT}
 }
 EOF
     cat >> docker-compose.yml <<EOF
