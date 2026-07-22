@@ -117,6 +117,10 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 }
 .card-title { display: flex; align-items: center; gap: 10px; }
 .card-title .flag { font-size: 22px; line-height: 1; }
+/* 自托管图标（发行版 logo / 国旗），以图片替代 emoji，零外链，适配内网/离线 */
+/* 发行版 logo 为内联 SVG，fill=currentColor，靠 color 跟随主题文字色 */
+.distro-ico { width: 18px; height: 18px; vertical-align: middle; flex: none; color: var(--text); }
+.flag-ico { width: 20px; height: 15px; object-fit: cover; border-radius: 2px; vertical-align: middle; box-shadow: 0 0 0 1px rgba(0,0,0,.10); flex: none; background: var(--bg-3); }
 .card-name {
   font-size: 15px; font-weight: 700; color: var(--text);
   background: transparent; border: 1px solid transparent; border-radius: 6px;
@@ -213,6 +217,7 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
   background: var(--bg-3); border-color: var(--border); outline: none;
 }
 .agents-table .flag { font-size: 18px; margin-right: 6px; }
+.agents-table .flag-ico { width: 18px; height: 13px; }
 .agents-table .dot { display: inline-block; }
 .agents-table .mini-bar {
   display: inline-block; width: 60px; height: 5px; background: var(--bg); border-radius: 3px; margin-right: 6px; overflow: hidden; vertical-align: middle;
