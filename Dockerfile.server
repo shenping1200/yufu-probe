@@ -1,0 +1,19 @@
+# ---- 多阶段构建：服务端 ----
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/probe-server ./server
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=build /out/probe-server /app/probe-server
+COPY configs/server.yaml /app/configs/server.yaml
+# 前端已通过 Go embed 打进二进制，无需挂载 static 目录
+# 仅把数据库目录挂载为持久卷，避免覆盖镜像内的二进制与配置
+RUN mkdir -p /app/data
+EXPOSE 39689
+VOLUME ["/app/data"]
+CMD ["/app/probe-server"]

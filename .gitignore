@@ -1,0 +1,19 @@
+# 构建产物 / 预编译二进制
+/dist/
+*.exe
+probe-server
+probe-agent
+
+# 运行时数据
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 本地运行生成的配置（install.sh 会在安装时生成）
+configs/*.local.yaml
+
+# 系统 / 编辑器
+.DS_Store
+*.swp

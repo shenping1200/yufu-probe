@@ -1,0 +1,35 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: probe-server
+    ports:
+      # 冷门端口：宿主机:容器（容器内固定 39689）
+      - "39689:39689"
+    volumes:
+      - probe-data:/app/data     # 仅持久化 SQLite 数据库（避免覆盖镜像内的二进制/配置）
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: probe-agent
+    # host 网络 + 共享宿主 PID namespace，使容器内采集到的是宿主机指标
+    network_mode: host
+    pid: "host"
+    environment:
+      SERVER: "ws://127.0.0.1:39689"   # 经宿主机映射端口连接 server
+      TOKEN: "change-me-agent-token"
+      INTERVAL: "5"
+      UUID_FILE: "/data/uuid"          # 持久化 uuid，保证流量累计不重置
+    volumes:
+      - probe-agent-data:/data
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  probe-data:
+  probe-agent-data:

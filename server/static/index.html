@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>探针监控面板</title>
+<link rel="stylesheet" href="/style.css?v=4">
+</head>
+<body>
+<div id="login" class="login-box">
+  <h1>探针监控</h1>
+  <input id="username" placeholder="用户名" value="admin">
+  <input id="password" type="password" placeholder="密码">
+  <button id="loginBtn">登录</button>
+  <div id="loginErr" class="err"></div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="header-left">
+      <h1>探针监控面板</h1>
+      <span class="subtitle">实时服务器状态</span>
+    </div>
+    <div class="header-right">
+      <div class="view-toggle" id="viewToggle">
+        <button data-mode="card" title="卡片视图">卡片</button>
+        <button data-mode="list" title="列表视图">列表</button>
+      </div>
+      <button id="themeBtn" title="切换主题">🌙</button>
+      <span id="user"></span>
+      <button id="logoutBtn">退出</button>
+    </div>
+  </header>
+
+  <div class="summary-cards">
+    <div class="summary-card">
+      <div class="summary-label">总台数</div>
+      <div class="summary-value" id="sumTotal">0</div>
+    </div>
+    <div class="summary-card online">
+      <div class="summary-label">在线</div>
+      <div class="summary-value" id="sumOnline">0</div>
+    </div>
+    <div class="summary-card offline">
+      <div class="summary-label">离线</div>
+      <div class="summary-value" id="sumOffline">0</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">本月下载 ↓</div>
+      <div class="summary-value down" id="sumRxTraffic">0</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">本月上传 ↑</div>
+      <div class="summary-value up" id="sumTxTraffic">0</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">实时下行 ↓</div>
+      <div class="summary-value down" id="sumRxRate">0</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">实时上行 ↑</div>
+      <div class="summary-value up" id="sumTxRate">0</div>
+    </div>
+  </div>
+
+  <div id="agentsGrid" class="agents-grid"></div>
+  <div id="agentsTable" class="agents-table hidden"></div>
+
+  <div id="detail" class="hidden">
+    <div class="detail-bar">
+      <strong id="detailTitle"></strong>
+      <button id="closeDetail">关闭</button>
+    </div>
+    <div id="chart" style="width:100%;height:320px;"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="/app.js?v=4"></script>
+</body>
+</html>

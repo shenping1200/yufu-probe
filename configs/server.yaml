@@ -1,0 +1,14 @@
+listen: 0.0.0.0
+# 冷门端口，可按需修改为其他非标准端口（避免与常见服务冲突）
+port: 39689
+tls:
+  enabled: false
+  cert: ""
+  key: ""
+# 客户端接入令牌，需与 agent 配置一致
+agent_token: "change-me-agent-token"
+admin:
+  username: admin
+  password: admin
+# SQLite 数据库路径（相对工作目录 /app）；数据目录已挂载为持久卷
+db_path: data/probe.db
