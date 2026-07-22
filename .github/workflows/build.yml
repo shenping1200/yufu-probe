@@ -6,6 +6,13 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # 仅当影响镜像内容时重建，避免改文档/脚本也浪费 6 分钟重新构建
+    paths:
+      - 'Dockerfile.server'
+      - 'server/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:

@@ -53,6 +53,13 @@ prepare_code() {
   if [[ -f "docker-compose.yml" && -f "Dockerfile.server" ]]; then
     INSTALL_DIR="$(pwd)"
     info "检测到本地源码，使用当前目录: $INSTALL_DIR"
+    # 若是 git 仓库，先拉取最新（确保 install.sh / Dockerfile 等是最新版，
+    # 否则重跑旧脚本会沿用旧的本地编译逻辑，看不到预编译镜像提速）
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+      info "拉取最新代码..."
+      git pull --rebase --autostash 2>/dev/null \
+        || warn "git pull 失败，继续使用当前代码（如需最新请先 git pull）"
+    fi
     return
   fi
 
