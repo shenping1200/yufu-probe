@@ -72,6 +72,16 @@ chmod +x build.sh
 bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/install.sh)
 ```
 
+运行后会出现**交互菜单**：
+
+- **1) 安装**：执行下方原有安装流程（自定义端口、管理员账号、Agent Token、域名绑定等）。
+- **2) 卸载**：进入卸载子菜单，进一步选择
+  - `1) 卸载服务端`：停止并移除服务端容器与数据卷，删除安装目录，并清理本机自监控 agent（文件/服务残留全清）；
+  - `2) 卸载客户端`：输入服务端地址与 Token 后，调用 `uninstall-agent.sh` 清理本机 agent 并通知服务端删除记录；
+  - `3) 卸载全部`：服务端 + 本机客户端一并卸载。
+
+> 非交互环境（如 `curl ... | bash` 流水线）会跳过菜单、直接执行安装，保持旧用法兼容。
+
 脚本会自动：
 - 检测 Docker / docker compose 环境
 - 交互式引导：端口、管理员用户名/密码、Agent Token、绑定域名

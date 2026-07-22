@@ -244,11 +244,82 @@ print_summary() {
   echo ""
 }
 
-# ---------- 主流程 ----------
-check_env
-read_config
-prepare_code
-generate_config
-start_services
-setup_self_monitor
-print_summary
+# ---------- 卸载：服务端 ----------
+uninstall_server() {
+  info "开始卸载服务端..."
+  if [[ -d "$INSTALL_DIR" ]]; then
+    ( cd "$INSTALL_DIR" 2>/dev/null && command -v docker &>/dev/null && \
+      { $COMPOSE down -v 2>/dev/null || docker compose down -v 2>/dev/null; } ) || true
+    rm -rf "$INSTALL_DIR"
+    ok "已删除安装目录 $INSTALL_DIR"
+  else
+    warn "未找到默认安装目录 $INSTALL_DIR（若曾自定义目录，请手动删除对应目录）"
+  fi
+  # 兜底：清理可能残留的容器与数据卷
+  command -v docker &>/dev/null && {
+    docker rm -f probe-server probe-caddy 2>/dev/null || true
+    docker volume rm yufu-probe_probe-data 2>/dev/null || true
+  } || true
+  # 清理本机自监控 agent（服务端安装时一并安装了 yufu-agent 自监控）
+  systemctl stop yufu-agent 2>/dev/null || true
+  systemctl disable yufu-agent 2>/dev/null || true
+  rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf
+  rm -rf /var/lib/yufu-agent
+  systemctl daemon-reload 2>/dev/null || true
+  ok "服务端卸载完成（含容器、数据卷与本机自监控 agent 清理）"
+}
+
+# ---------- 卸载：客户端 ----------
+uninstall_client() {
+  info "开始卸载客户端（本机 agent）..."
+  read -rp "服务端地址 (例如 ws://1.2.3.4:39689 或 1.2.3.4:39689): " CLI_SERVER || true
+  read -rp "Agent Token: " CLI_TOKEN || true
+  [[ -z "$CLI_SERVER" || -z "$CLI_TOKEN" ]] && err "服务端地址与 Token 均不能为空"
+  info "调用 uninstall-agent.sh 清理本机 agent 并通知服务端删除记录..."
+  bash <(curl -sSL "https://raw.githubusercontent.com/shenping1200/yufu-probe/main/uninstall-agent.sh") "$CLI_SERVER" "$CLI_TOKEN"
+}
+
+# ---------- 卸载：子菜单 ----------
+do_uninstall() {
+  echo ""
+  echo "========== 卸载 =========="
+  echo "1) 卸载服务端"
+  echo "2) 卸载客户端"
+  echo "3) 卸载全部（服务端 + 本机客户端）"
+  echo "=========================="
+  read -rp "请选择 [1-3]: " sub || true
+  case "$sub" in
+    1) uninstall_server ;;
+    2) uninstall_client ;;
+    3) uninstall_server; uninstall_client ;;
+    *) err "无效选择: $sub" ;;
+  esac
+}
+
+# ---------- 安装（保持原有逻辑不变）----------
+do_install() {
+  check_env
+  read_config
+  prepare_code
+  generate_config
+  start_services
+  setup_self_monitor
+  print_summary
+}
+
+# ---------- 入口：交互显示菜单；非交互（如 curl|bash 流水线）默认直接安装 ----------
+if [[ -t 0 ]]; then
+  echo ""
+  echo "========== 渔夫探针 (YuFu Probe) =========="
+  echo "1) 安装"
+  echo "2) 卸载"
+  echo "=========================================="
+  read -rp "请选择 [1/2]: " top || true
+  case "$top" in
+    1) do_install ;;
+    2) do_uninstall ;;
+    *) err "无效选择: $top" ;;
+  esac
+else
+  do_install
+fi
