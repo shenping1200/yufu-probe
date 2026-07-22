@@ -221,7 +221,10 @@ func (s *ServerState) Groups() []string {
 	return out
 }
 
-// Snapshot 返回当前全部机器的副本（用于广播 / REST）
+// Snapshot 返回当前全部机器的副本（用于广播 / REST）。
+// 必须按「添加时间」升序稳定排序：Go map 迭代是随机的，不排序会让卡片
+// 每秒在 UI 上"洗牌"；同时也是用户要求的"按添加时间固定排位"。
+// 同秒创建用 uuid 字典序兜底，保证严格稳定。
 func (s *ServerState) Snapshot() []AgentRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -229,6 +232,12 @@ func (s *ServerState) Snapshot() []AgentRow {
 	for _, a := range s.agents {
 		out = append(out, *a)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
+		return out[i].UUID < out[j].UUID
+	})
 	return out
 }
 

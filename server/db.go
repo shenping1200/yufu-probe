@@ -164,13 +164,14 @@ func SetAlias(db *sql.DB, uuid, alias string) error {
 }
 
 // ListAgents 返回所有机器，带当前自然月累计流量
+// 排序：按添加时间 created_at 升序（旧的在最前），同秒用 uuid 兜底，保证稳定不抖动
 func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 	rows, err := db.Query(`SELECT a.uuid, a.alias, a.hostname, a.ip, a.boot_time, a.uptime,
 		a.cpu, a.cpu_count, a.mem_used, a.mem_total, a.disk_used, a.disk_total, a.rx_rate, a.tx_rate, a.online, a.last_seen, a.created_at, a.country, a.country_code, a.os, a.platform, a.remark, a.group_name, a.expire_at,
 		COALESCE(t.rx_total,0), COALESCE(t.tx_total,0)
 		FROM agents a
 		LEFT JOIN traffic_monthly t ON a.uuid=t.uuid AND t.year_month=?
-		ORDER BY CASE WHEN a.alias='' THEN a.hostname ELSE a.alias END, a.uuid`, yearMonth)
+		ORDER BY a.created_at ASC, a.uuid ASC`, yearMonth)
 	if err != nil {
 		return nil, err
 	}
