@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>探针监控面板</title>
-<link rel="stylesheet" href="/style.css?v=4">
+<link rel="stylesheet" href="/style.css?v=5">
 </head>
 <body>
 <div id="login" class="login-box">
@@ -22,6 +22,7 @@
       <span class="subtitle">实时服务器状态</span>
     </div>
     <div class="header-right">
+      <button id="installCmdBtn" title="生成并复制 Linux 客户端一键安装命令" class="primary">📋 生成安装命令</button>
       <div class="view-toggle" id="viewToggle">
         <button data-mode="card" title="卡片视图">卡片</button>
         <button data-mode="list" title="列表视图">列表</button>
@@ -81,15 +82,29 @@
       <input id="editName" placeholder="留空则显示主机名">
       <label>备注</label>
       <textarea id="editRemark" rows="3" placeholder="可选，例如：生产环境 Web 节点"></textarea>
+      <label>VPS 到期时间 <span style="color:var(--text-2);font-weight:normal">（留空表示不设置）</span></label>
+      <input id="editExpire" type="date">
       <div class="modal-actions">
         <button id="editCancel">取消</button>
         <button id="editSave" class="primary">保存</button>
       </div>
     </div>
   </div>
+
+  <div id="installModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>客户端一键安装命令</h3>
+      <p style="color:var(--text-2);font-size:13px;margin:-4px 0 8px">到新 VPS 上粘贴执行即可（需 root + curl + systemd）。</p>
+      <textarea id="installCmdText" rows="4" readonly style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;width:100%;box-sizing:border-box;background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;resize:vertical"></textarea>
+      <div class="modal-actions">
+        <button id="installCopyBtn" class="primary">复制到剪贴板</button>
+        <button id="installCloseBtn">关闭</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-<script src="/app.js?v=4"></script>
+<script src="/app.js?v=5"></script>
 </body>
 </html>

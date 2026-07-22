@@ -149,6 +149,17 @@ function fmtUptime(s) {
   const m = Math.floor((s % 3600) / 60);
   return h + '时' + m + '分';
 }
+// 倒计时（到期时间 → 天），返回 {text, cls, days}
+// cls: 'expired' 已到期 / 'soon' ≤7天 / 'ok' >7天 / null 未设置
+function fmtCountdown(expireAt) {
+  if (!expireAt || !expireAt > 0) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const diff = expireAt - now;
+  const days = Math.ceil(diff / 86400);
+  if (diff <= 0) return { text: '已到期', cls: 'expired', days: 0 };
+  if (days <= 7) return { text: days + '天', cls: 'soon', days };
+  return { text: days + '天', cls: 'ok', days };
+}
 function escapeHtml(s) {
   return (s || '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -212,14 +223,17 @@ function renderCard() {
     const loc = a.country ? (a.country.replace(flagFromCountry(a.country) || '', '').trim()) : (isPrivateIP(a.ip) ? '内网' : '');
     const osText = [a.os, a.platform].filter(Boolean).join(' · ') || 'Linux';
 
+    const cd = fmtCountdown(a.expire_at);
+    const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
     card.innerHTML = `
       <div class="card-header">
         <div class="card-title">
           <span class="flag">${flag}</span>
           <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
-          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注">✎</button>
+          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/到期">✎</button>
         </div>
         <div class="card-status">
+          ${cdBadge}
           <span class="dot ${a.online ? 'on' : 'off'}"></span>
           <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
         </div>
@@ -270,7 +284,7 @@ function renderCard() {
   bindAliasInputs('.card-name');
 }
 
-// ---------- 编辑名称/备注 ----------
+// ---------- 编辑名称/备注/到期 ----------
 let editUUID = null;
 function openEdit(uuid) {
   const a = state.agents.find(x => x.uuid === uuid);
@@ -278,6 +292,17 @@ function openEdit(uuid) {
   editUUID = uuid;
   document.getElementById('editName').value = a.alias || '';
   document.getElementById('editRemark').value = a.remark || '';
+  // 到期时间：Unix 秒 → YYYY-MM-DD（按本地时区）
+  const exp = document.getElementById('editExpire');
+  if (a.expire_at) {
+    const d = new Date(a.expire_at * 1000);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    exp.value = y + '-' + m + '-' + day;
+  } else {
+    exp.value = '';
+  }
   document.getElementById('editModal').classList.remove('hidden');
 }
 function closeEdit() {
@@ -292,13 +317,20 @@ document.getElementById('editSave').onclick = async () => {
   if (!editUUID) return;
   const name = document.getElementById('editName').value;
   const remark = document.getElementById('editRemark').value;
+  const dateStr = document.getElementById('editExpire').value;
+  // 日期 → 该日 23:59:59 的 Unix 秒（按本地时区）
+  let expireAt = null;
+  if (dateStr) {
+    const d = new Date(dateStr + 'T23:59:59');
+    if (!isNaN(d.getTime())) expireAt = Math.floor(d.getTime() / 1000);
+  }
   await fetch('/api/agents/' + editUUID, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, remark }),
+    body: JSON.stringify({ name, remark, expire_at: expireAt }),
   });
   const a = state.agents.find(x => x.uuid === editUUID);
-  if (a) { a.alias = name; a.remark = remark; }
+  if (a) { a.alias = name; a.remark = remark; a.expire_at = expireAt; }
   closeEdit();
   render();
   if (state.currentUUID === editUUID) drawDetail();
@@ -311,13 +343,15 @@ function renderList() {
     const flag = flagFromCountry(a.country) || '🌍';
     const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
     const loc = a.country ? (a.country.replace(flagFromCountry(a.country) || '', '').trim()) : (isPrivateIP(a.ip) ? '内网' : '');
+    const cd = fmtCountdown(a.expire_at);
+    const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
     return `
       <tr>
         <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
         <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
         <td><span class="flag">${flag}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br><span style="color:var(--text-2);font-size:12px">${escapeHtml(a.ip)}</span></td>
         <td>${escapeHtml(fmtConfig(a))}</td>
-        <td>${fmtUptime(a.uptime)}</td>
+        <td>${fmtUptime(a.uptime)}${cdHtml}</td>
         <td>
           <div>CPU ${a.cpu.toFixed(1)}% <span class="mini-bar"><div class="bar-cpu" style="width:${percent(a.cpu, 100)}%"></div></span></div>
           <div style="margin-top:4px">内存 ${percent(a.mem_used, a.mem_total).toFixed(1)}% <span class="mini-bar"><div class="bar-mem" style="width:${percent(a.mem_used, a.mem_total)}%"></div></span></div>
@@ -404,5 +438,44 @@ document.getElementById('closeDetail').onclick = () => {
   document.getElementById('detail').classList.add('hidden');
   state.currentUUID = null;
 };
+
+// ---------- 生成安装命令 ----------
+document.getElementById('installCmdBtn').onclick = async () => {
+  const btn = document.getElementById('installCmdBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/install-command');
+    if (!r.ok) throw new Error('获取失败: HTTP ' + r.status);
+    const d = await r.json();
+    document.getElementById('installCmdText').value = d.command;
+    document.getElementById('installModal').classList.remove('hidden');
+    // 自动复制（需 HTTPS / localhost；失败静默回落到用户手动点复制）
+    try { await navigator.clipboard.writeText(d.command); } catch (e) {}
+  } catch (e) {
+    alert('获取安装命令失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
+document.getElementById('installCopyBtn').onclick = async () => {
+  const txt = document.getElementById('installCmdText').value;
+  try {
+    await navigator.clipboard.writeText(txt);
+    const btn = document.getElementById('installCopyBtn');
+    const old = btn.textContent;
+    btn.textContent = '✓ 已复制';
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  } catch (e) {
+    const ta = document.getElementById('installCmdText');
+    ta.select();
+    document.execCommand && document.execCommand('copy');
+  }
+};
+document.getElementById('installCloseBtn').onclick = () => {
+  document.getElementById('installModal').classList.add('hidden');
+};
+document.getElementById('installModal').addEventListener('click', e => {
+  if (e.target.id === 'installModal') document.getElementById('installModal').classList.add('hidden');
+});
 
 checkLogin();

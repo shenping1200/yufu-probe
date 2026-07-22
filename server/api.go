@@ -30,6 +30,12 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// 源码仓库全名（用于生成安装命令的下载链接），与 install-agent.sh 默认仓库保持一致
+const repoOwner = "shenping1200"
+const repoName  = "yufu-probe"
+
+func repoFullName() string { return repoOwner + "/" + repoName }
+
 // AgentReport 客户端上报的数据结构
 type AgentReport struct {
 	UUID      string  `json:"uuid"`
@@ -120,6 +126,36 @@ func meHandler(cfg *Config) http.HandlerFunc {
 	}
 }
 
+// installCommandHandler 返回给新 VPS 用的客户端一键安装命令。
+// 服务端地址取自请求 Host（与浏览器访问面板的地址一致，兼容公网域名/反代场景）；
+// Token 为服务端配置的 agent_token。
+func installCommandHandler(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 推导 ws/wss 协议
+		scheme := "ws"
+		if r.TLS != nil {
+			scheme = "wss"
+		}
+		if fp := r.Header.Get("X-Forwarded-Proto"); fp == "https" {
+			scheme = "wss"
+		} else if fp == "http" {
+			scheme = "ws"
+		}
+		host := r.Host
+		if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+			host = fh
+		}
+		wsURL := scheme + "://" + host
+		command := "bash <(curl -sSL https://raw.githubusercontent.com/" + repoFullName() + "/main/install-agent.sh) " + wsURL + " " + cfg.AgentToken
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"command": command,
+			"ws":      wsURL,
+			"token":   cfg.AgentToken,
+		})
+	}
+}
+
 func agentsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		list, err := ListAgents(db, time.Now().Format("2006-01"))
@@ -164,19 +200,37 @@ func trafficHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-// updateAgentHandler 更新机器的显示名称与备注（管理员鉴权）
+// updateAgentHandler 更新机器的显示名称、备注与到期时间（管理员鉴权）
 func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uuid := mux.Vars(r)["uuid"]
-		var req struct {
-			Name   string `json:"name"`
-			Remark string `json:"remark"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// 兼容两种请求体：{name, remark, expire_at} 或 {alias, remark, expire_at}
+		var raw map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		if err := UpdateAgent(db, uuid, req.Name, req.Remark); err != nil {
+		alias := ""
+		if v, ok := raw["name"]; ok {
+			_ = json.Unmarshal(v, &alias)
+		} else if v, ok := raw["alias"]; ok {
+			_ = json.Unmarshal(v, &alias)
+		}
+		remark := ""
+		if v, ok := raw["remark"]; ok {
+			_ = json.Unmarshal(v, &remark)
+		}
+		var expireAt *int64
+		if v, ok := raw["expire_at"]; ok {
+			// 支持 null（清空）或数字（Unix 秒）
+			if string(v) != "null" && len(v) > 0 {
+				var n int64
+				if err := json.Unmarshal(v, &n); err == nil {
+					expireAt = &n
+				}
+			}
+		}
+		if err := UpdateAgent(db, uuid, alias, remark, expireAt); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -307,6 +361,7 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/login", loginHandler(cfg, db)).Methods("POST")
 	r.HandleFunc("/api/logout", logoutHandler(db)).Methods("POST")
 	r.HandleFunc("/api/me", requireLogin(db, meHandler(cfg))).Methods("GET")
+	r.HandleFunc("/api/install-command", requireLogin(db, installCommandHandler(cfg))).Methods("GET")
 	r.HandleFunc("/api/agents", requireLogin(db, agentsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/agents/{uuid}/alias", requireLogin(db, aliasHandler(db))).Methods("PUT")
 	r.HandleFunc("/api/agents/{uuid}", requireLogin(db, updateAgentHandler(db))).Methods("PATCH")

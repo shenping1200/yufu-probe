@@ -10,6 +10,8 @@
 - **鉴权**：Web 端账号密码登录（session）+ 客户端 Token 接入，双保险
 - **跨平台客户端**：Linux / Windows / macOS，amd64 / arm64
 - **可选 TLS**：跨公网部署时启用 `wss` / `https`
+- **一键安装命令按钮**：顶部「📋 生成安装命令」一键生成并复制到剪贴板（自动用当前访问地址 + Token 拼装），到新 VPS 粘贴即可
+- **VPS 到期时间 & 倒计时**：编辑框可设置每台机器的到期时间；卡片右上与列表「运行时间」下方显示剩余天数，**≤ 7 天橙色警告、已到期红色脉冲提醒**
 
 ## 目录结构
 
@@ -213,9 +215,10 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 | POST | `/api/login` | 账号密码登录 |
 | POST | `/api/logout` | 退出 |
 | GET | `/api/me` | 当前登录用户 |
-| GET | `/api/agents` | 机器列表（含本月累计） |
+| GET | `/api/install-command` | 返回给新 VPS 用的客户端一键安装命令（自动用当前访问地址 + agent_token 拼装） |
+| GET | `/api/agents` | 机器列表（含本月累计、`expire_at`） |
 | PUT | `/api/agents/:uuid/alias` | 设置别名（行内编辑） |
-| PATCH | `/api/agents/:uuid` | 更新显示名称与备注 |
+| PATCH | `/api/agents/:uuid` | 更新显示名称、备注、`expire_at`（到时时间，Unix 秒，传 `null` 清空） |
 | DELETE | `/api/agents/:uuid` | 删除机器（Agent Token 鉴权，用于主动注销） |
 | GET | `/api/agents/:uuid/traffic` | 各自然月流量历史 |
 | WS | `/ws/agent?token=` | 客户端上报通道 |

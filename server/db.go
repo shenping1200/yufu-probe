@@ -35,6 +35,8 @@ type AgentRow struct {
 	Remark      string  `json:"remark"`
 	RxMonth     float64 `json:"rx_month"`
 	TxMonth     float64 `json:"tx_month"`
+	// ExpireAt VPS 到期时间（Unix 秒）。为 nil 表示未设置。
+	ExpireAt    *int64  `json:"expire_at"`
 }
 
 // MonthlyTraffic 自然月流量历史
@@ -108,6 +110,7 @@ func InitDB(path string) (*sql.DB, error) {
 	db.Exec(`ALTER TABLE agents ADD COLUMN os TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE agents ADD COLUMN platform TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE agents ADD COLUMN remark TEXT DEFAULT ''`)
+	db.Exec(`ALTER TABLE agents ADD COLUMN expire_at INTEGER DEFAULT 0`)
 	return db, nil
 }
 
@@ -153,7 +156,7 @@ func SetAlias(db *sql.DB, uuid, alias string) error {
 // ListAgents 返回所有机器，带当前自然月累计流量
 func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 	rows, err := db.Query(`SELECT a.uuid, a.alias, a.hostname, a.ip, a.boot_time, a.uptime,
-		a.cpu, a.cpu_count, a.mem_used, a.mem_total, a.disk_used, a.disk_total, a.rx_rate, a.tx_rate, a.online, a.last_seen, a.created_at, a.country, a.country_code, a.os, a.platform, a.remark,
+		a.cpu, a.cpu_count, a.mem_used, a.mem_total, a.disk_used, a.disk_total, a.rx_rate, a.tx_rate, a.online, a.last_seen, a.created_at, a.country, a.country_code, a.os, a.platform, a.remark, a.expire_at,
 		COALESCE(t.rx_total,0), COALESCE(t.tx_total,0)
 		FROM agents a
 		LEFT JOIN traffic_monthly t ON a.uuid=t.uuid AND t.year_month=?
@@ -166,20 +169,31 @@ func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 	for rows.Next() {
 		var a AgentRow
 		var online int
+		var expireAt sql.NullInt64
 		if err := rows.Scan(&a.UUID, &a.Alias, &a.Hostname, &a.IP, &a.BootTime, &a.Uptime,
 			&a.CPU, &a.CPUCount, &a.MemUsed, &a.MemTotal, &a.DiskUsed, &a.DiskTotal, &a.RxRate, &a.TxRate,
-			&online, &a.LastSeen, &a.CreatedAt, &a.Country, &a.CountryCode, &a.OS, &a.Platform, &a.Remark, &a.RxMonth, &a.TxMonth); err != nil {
+			&online, &a.LastSeen, &a.CreatedAt, &a.Country, &a.CountryCode, &a.OS, &a.Platform, &a.Remark, &expireAt,
+			&a.RxMonth, &a.TxMonth); err != nil {
 			return nil, err
 		}
 		a.Online = online == 1
+		if expireAt.Valid && expireAt.Int64 > 0 {
+			v := expireAt.Int64
+			a.ExpireAt = &v
+		}
 		out = append(out, a)
 	}
 	return out, nil
 }
 
-// UpdateAgent 更新机器的显示名称(alias)与备注(remark)
-func UpdateAgent(db *sql.DB, uuid, alias, remark string) error {
-	_, err := db.Exec(`UPDATE agents SET alias=?, remark=? WHERE uuid=?`, alias, remark, uuid)
+// UpdateAgent 更新机器的显示名称(alias)、备注(remark)与到期时间(expireAt)。
+// expireAt 为 nil 表示清空到期时间（设为 NULL）。
+func UpdateAgent(db *sql.DB, uuid, alias, remark string, expireAt *int64) error {
+	var v sql.NullInt64
+	if expireAt != nil {
+		v = sql.NullInt64{Int64: *expireAt, Valid: true}
+	}
+	_, err := db.Exec(`UPDATE agents SET alias=?, remark=?, expire_at=? WHERE uuid=?`, alias, remark, v, uuid)
 	return err
 }
 
