@@ -269,17 +269,28 @@ uninstall_server() {
   ok "服务端卸载完成（含容器、数据卷与本机自监控 agent 清理）"
 }
 
-# ---------- 卸载：客户端 ----------
+# ---------- 卸载：客户端（自动识别本机 agent 配置，无需手动输入）----------
 uninstall_client() {
   info "开始卸载客户端（本机 agent）..."
-  read -rp "服务端地址 (例如 ws://1.2.3.4:39689 或 1.2.3.4:39689): " CLI_SERVER || true
-  read -rp "Agent Token: " CLI_TOKEN || true
-  [[ -z "$CLI_SERVER" || -z "$CLI_TOKEN" ]] && err "服务端地址与 Token 均不能为空"
+  local CLI_SERVER="" CLI_TOKEN=""
+  local CONF="/etc/yufu-agent.conf"
+  if [[ -f "$CONF" ]]; then
+    CLI_SERVER=$(grep -E '^[[:space:]]*SERVER=' "$CONF" | head -n1 | cut -d= -f2- | tr -d '[:space:]')
+    CLI_TOKEN=$(grep -E  '^[[:space:]]*TOKEN='  "$CONF" | head -n1 | cut -d= -f2- | tr -d '[:space:]')
+  fi
+  if [[ -n "$CLI_SERVER" && -n "$CLI_TOKEN" ]]; then
+    info "已自动识别本机 agent 配置：服务端=$CLI_SERVER（无需手动输入）"
+  else
+    warn "未在 $CONF 找到服务端地址或 Token，转为手动输入"
+    read -rp "服务端地址 (例如 ws://1.2.3.4:39689 或 1.2.3.4:39689): " CLI_SERVER || true
+    read -rp "Agent Token: " CLI_TOKEN || true
+  fi
+  [[ -z "$CLI_SERVER" || -z "$CLI_TOKEN" ]] && err "缺少服务端地址或 Token，无法卸载客户端"
   info "调用 uninstall-agent.sh 清理本机 agent 并通知服务端删除记录..."
   bash <(curl -sSL "https://raw.githubusercontent.com/shenping1200/yufu-probe/main/uninstall-agent.sh") "$CLI_SERVER" "$CLI_TOKEN"
 }
 
-# ---------- 卸载：子菜单 ----------
+# ---------- 卸载：子菜单（含二次确认）----------
 do_uninstall() {
   echo ""
   echo "========== 卸载 =========="
@@ -288,11 +299,26 @@ do_uninstall() {
   echo "3) 卸载全部（服务端 + 本机客户端）"
   echo "=========================="
   read -rp "请选择 [1-3]: " sub || true
+
+  local desc=""
+  case "$sub" in
+    1) desc="将卸载服务端：停止并删除容器/数据卷，删除安装目录 $INSTALL_DIR，并清理本机自监控 agent（服务残留一并清除）。" ;;
+    2) desc="将卸载本机客户端 agent：停止进程、删除文件，并自动识别本机配置后通知服务端删除本机记录。" ;;
+    3) desc="将卸载全部：服务端（容器/数据卷/安装目录/自监控）+ 本机客户端 agent（进程/文件/服务端记录）一次性清理。" ;;
+    *) err "无效选择: $sub" ;;
+  esac
+
+  echo -e "\033[33m[确认]\033[0m $desc"
+  read -rp "确认执行以上卸载操作？[y/N]: " sure || true
+  case "$sure" in
+    y|Y|yes|YES) ;;
+    *) info "已取消，未做任何改动"; return ;;
+  esac
+
   case "$sub" in
     1) uninstall_server ;;
     2) uninstall_client ;;
     3) uninstall_server; uninstall_client ;;
-    *) err "无效选择: $sub" ;;
   esac
 }
 
