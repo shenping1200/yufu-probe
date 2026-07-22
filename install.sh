@@ -132,24 +132,6 @@ services:
     volumes:
       - probe-data:/app/data
     restart: unless-stopped
-
-  agent:
-    build:
-      context: .
-      dockerfile: Dockerfile.agent
-    container_name: probe-agent
-    network_mode: host
-    pid: "host"
-    environment:
-      SERVER: "ws://127.0.0.1:${PORT}"
-      TOKEN: "${AGENT_TOKEN}"
-      INTERVAL: "5"
-      UUID_FILE: "/data/uuid"
-    volumes:
-      - probe-agent-data:/data
-    depends_on:
-      - server
-    restart: unless-stopped
 EOF
 
   if [[ -n "$DOMAIN" ]]; then
@@ -178,7 +160,6 @@ EOF
 
 volumes:
   probe-data:
-  probe-agent-data:
 EOF
 
   if [[ -n "$DOMAIN" ]]; then
@@ -197,6 +178,29 @@ start_services() {
   $COMPOSE down 2>/dev/null || true
   $COMPOSE up -d --build
   ok "服务已启动"
+}
+
+# ---------- 本机原生自监控 ----------
+setup_self_monitor() {
+  case "$ARCH" in
+    x86_64|amd64) BIN_ARCH=amd64 ;;
+    aarch64|arm64) BIN_ARCH=arm64 ;;
+    *) warn "跳过自监控：不支持的架构 $ARCH"; return 0 ;;
+  esac
+
+  LOCAL_BIN_FILE="./dist/yufu-agent-linux-${BIN_ARCH}"
+  if [ ! -f "$LOCAL_BIN_FILE" ]; then
+    warn "未找到本地二进制 $LOCAL_BIN_FILE，跳过自监控（可后续手动在该机运行 install-agent.sh）"
+    return 0
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "未检测到 systemd，跳过自监控 agent（可改用 install-agent.sh 的 nohup 兜底）"
+    return 0
+  fi
+
+  info "为本机安装原生自监控 agent（读取宿主机真实系统/流量，不再误报 Alpine）..."
+  LOCAL_BIN="$LOCAL_BIN_FILE" bash ./install-agent.sh "ws://127.0.0.1:${PORT}" "${AGENT_TOKEN}" 5
+  ok "自监控 agent 已注册（systemctl status yufu-agent 查看）"
 }
 
 # ---------- 输出信息 ----------
@@ -219,12 +223,18 @@ print_summary() {
   echo "  安装目录: ${INSTALL_DIR}"
   echo "  常用命令:"
   echo "    cd ${INSTALL_DIR}"
-  echo "    $COMPOSE ps          # 查看状态"
-  echo "    $COMPOSE logs -f     # 查看日志"
-  echo "    $COMPOSE down        # 停止服务"
+  echo "    $COMPOSE ps          # 查看服务端状态"
+  echo "    $COMPOSE logs -f     # 查看服务端日志"
+  echo "    $COMPOSE down        # 停止服务端"
+  echo "    systemctl status yufu-agent   # 查看本机自监控 agent"
+  echo "    systemctl restart yufu-agent   # 重启自监控 agent"
   echo ""
   echo "  在其他机器安装 Agent（秒级，无需 Docker）:"
   echo "    bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/install-agent.sh) \\"
+  echo "      ws://${LOCAL_IP}:${PORT} ${AGENT_TOKEN}"
+  echo ""
+  echo "  卸载某台客户端（一条命令，服务端立即移除该机器）:"
+  echo "    bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/uninstall-agent.sh) \\"
   echo "      ws://${LOCAL_IP}:${PORT} ${AGENT_TOKEN}"
   echo ""
   echo "  （Agent 以宿主机原生进程运行，OS/配置/流量均为真实宿主机数据；"
@@ -240,4 +250,5 @@ read_config
 prepare_code
 generate_config
 start_services
+setup_self_monitor
 print_summary

@@ -5,7 +5,9 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -183,6 +185,35 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// requireAgentToken 校验 Agent Token（兼容 Authorization: Bearer <token> 或 ?token= 查询参数）
+func requireAgentToken(cfg *Config, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tok := r.Header.Get("Authorization")
+		tok = strings.TrimPrefix(tok, "Bearer ")
+		if tok == "" {
+			tok = r.URL.Query().Get("token")
+		}
+		if tok != cfg.AgentToken {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// deleteAgentHandler 删除机器（agent 主动注销或管理员移除，需 Agent Token 鉴权）
+func deleteAgentHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uuid := mux.Vars(r)["uuid"]
+		if err := DeleteAgent(db, uuid); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}
+}
+
 // agentWSHandler 接收客户端上报（需 Token）
 func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +231,20 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if err != nil {
 				return
 			}
+			// 1) 控制消息：客户端主动注销（优雅停止时发送）
+			var ctrl struct {
+				Action string `json:"action"`
+				UUID   string `json:"uuid"`
+			}
+			if err := json.Unmarshal(data, &ctrl); err == nil && ctrl.Action == "unregister" {
+				if ctrl.UUID != "" {
+					DeleteAgent(db, ctrl.UUID)
+					broadcastAgents(hub, db)
+					log.Printf("[ws] agent %s 已注销", ctrl.UUID)
+				}
+				return
+			}
+			// 2) 普通状态上报
 			var rep AgentReport
 			if err := json.Unmarshal(data, &rep); err != nil || rep.UUID == "" {
 				continue
@@ -265,6 +310,7 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/agents", requireLogin(db, agentsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/agents/{uuid}/alias", requireLogin(db, aliasHandler(db))).Methods("PUT")
 	r.HandleFunc("/api/agents/{uuid}", requireLogin(db, updateAgentHandler(db))).Methods("PATCH")
+	r.HandleFunc("/api/agents/{uuid}", requireAgentToken(cfg, deleteAgentHandler(db))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}/traffic", requireLogin(db, trafficHandler(db))).Methods("GET")
 	r.HandleFunc("/ws/agent", agentWSHandler(cfg, db, hub))
 	r.HandleFunc("/ws/viewer", viewerWSHandler(db, hub))

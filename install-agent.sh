@@ -47,17 +47,24 @@ esac
 
 command -v curl >/dev/null 2>&1 || err "未检测到 curl"
 
-# ---------- 下载静态二进制 ----------
-URL="${BASE}/yufu-agent-linux-${BIN_ARCH}"
-info "下载 agent 二进制: $URL"
-TMP=$(mktemp /tmp/yufu-agent.XXXXXX)
-if ! curl -fsSL "$URL" -o "$TMP"; then
+# ---------- 安装二进制 ----------
+# 优先使用本地 LOCAL_BIN（避免重复下载，常用于 install.sh 自监控场景）
+if [ -n "$LOCAL_BIN" ] && [ -f "$LOCAL_BIN" ]; then
+  info "使用本地二进制: $LOCAL_BIN"
+  install -m 0755 "$LOCAL_BIN" /usr/local/bin/yufu-agent
+  ok "已安装 /usr/local/bin/yufu-agent（来自本地）"
+else
+  URL="${BASE}/yufu-agent-linux-${BIN_ARCH}"
+  info "下载 agent 二进制: $URL"
+  TMP=$(mktemp /tmp/yufu-agent.XXXXXX)
+  if ! curl -fsSL "$URL" -o "$TMP"; then
+    rm -f "$TMP"
+    err "下载失败。请确认仓库 ${REPO} 的 dist/ 下存在 yufu-agent-linux-${BIN_ARCH}（或设置 LOCAL_BIN=/path/to/binary 使用本地文件）。"
+  fi
+  install -m 0755 "$TMP" /usr/local/bin/yufu-agent
   rm -f "$TMP"
-  err "下载失败。请确认仓库 ${REPO} 的 dist/ 下存在 yufu-agent-linux-${BIN_ARCH}（可改用源码构建，见 README）。"
+  ok "已安装 /usr/local/bin/yufu-agent"
 fi
-install -m 0755 "$TMP" /usr/local/bin/yufu-agent
-rm -f "$TMP"
-ok "已安装 /usr/local/bin/yufu-agent"
 
 # ---------- 配置文件 ----------
 CONFIG_DIR=/etc

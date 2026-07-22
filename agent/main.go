@@ -4,9 +4,11 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -81,6 +83,16 @@ func main() {
 	rep := NewReporter(cfg.Server, cfg.Token, id)
 	send := make(chan *Snapshot, 1)
 	go rep.Run(send)
+
+	// 优雅停止：收到 SIGTERM/SIGINT 时主动通知服务端注销，再退出
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("[agent] 收到退出信号，正在通知服务端注销本机...")
+		rep.Unregister()
+		os.Exit(0)
+	}()
 
 	log.Printf("[agent] uuid=%s server=%s interval=%ds", id, cfg.Server, cfg.Interval)
 	locale, _ := time.LoadLocation("Local")

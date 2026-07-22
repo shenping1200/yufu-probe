@@ -162,7 +162,7 @@ func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []AgentRow
+	var out []AgentRow = make([]AgentRow, 0)
 	for rows.Next() {
 		var a AgentRow
 		var online int
@@ -181,6 +181,18 @@ func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 func UpdateAgent(db *sql.DB, uuid, alias, remark string) error {
 	_, err := db.Exec(`UPDATE agents SET alias=?, remark=? WHERE uuid=?`, alias, remark, uuid)
 	return err
+}
+
+// DeleteAgent 删除一台机器及其全部流量历史（主动注销 / 管理员移除）。
+// 返回受影响的行数，便于调用方判断 UUID 是否存在。
+func DeleteAgent(db *sql.DB, uuid string) error {
+	if _, err := db.Exec(`DELETE FROM traffic_monthly WHERE uuid=?`, uuid); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DELETE FROM agents WHERE uuid=?`, uuid); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetTrafficHistory 返回某机器各自然月流量历史

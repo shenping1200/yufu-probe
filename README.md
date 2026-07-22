@@ -106,24 +106,28 @@ bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/
 
 ```bash
 cd /opt/yufu-probe
-docker compose down            # 停止并移除容器（含探针自监控 agent）
+docker compose down            # 停止并移除服务端容器
+systemctl stop yufu-agent     # 停止本机自监控 agent（原生 systemd 服务，独立于服务端容器）
 # 如需彻底删除安装目录与所有数据：
 rm -rf /opt/yufu-probe
+systemctl disable yufu-agent 2>/dev/null; rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf; rm -rf /var/lib/yufu-agent; systemctl daemon-reload
 ```
 
-**客户端 —— 旧版（Docker 容器 `probe-agent`）**
-
-> 首次安装时自监控用的 Docker 容器会随上面的 `docker compose down` 一并删除；若单独残留：
+**客户端 —— 推荐：一条命令卸载（原生 / Docker 均兼容）**
 
 ```bash
-docker rm -f probe-agent
+bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/uninstall-agent.sh) \
+  ws://<服务端IP>:39689 <AgentToken>
 ```
 
-**客户端 —— 新版（systemd 原生 agent）**
+该脚本会：① 调用 `DELETE /api/agents/:uuid` **通知服务端立即删除本机记录**（面板随即消失）；② 停止并清理本机 agent 进程与文件（原生 systemd 或旧版 Docker 容器 `probe-agent` 均兼容）。这正是「在客户端执行一次删除命令，服务端就看不到它」的体验。
+
+如需手动清理原生 agent：
 
 ```bash
 systemctl stop yufu-agent && systemctl disable yufu-agent && \
   rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf && \
+  rm -rf /var/lib/yufu-agent && \
   systemctl daemon-reload
 ```
 
@@ -175,6 +179,7 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 | GET | `/api/agents` | 机器列表（含本月累计） |
 | PUT | `/api/agents/:uuid/alias` | 设置别名（行内编辑） |
 | PATCH | `/api/agents/:uuid` | 更新显示名称与备注 |
+| DELETE | `/api/agents/:uuid` | 删除机器（Agent Token 鉴权，用于主动注销） |
 | GET | `/api/agents/:uuid/traffic` | 各自然月流量历史 |
 | WS | `/ws/agent?token=` | 客户端上报通道 |
 | WS | `/ws/viewer` | 浏览器实时订阅（需登录） |
@@ -192,3 +197,5 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 - **跨公网**：申请证书后 `tls.enabled: true` 并填写 `cert`/`key`；agent 的 `server` 改为 `wss://域名`。
 - 客户端建议注册为系统服务（systemd / Windows Service）开机自启。
 - 首次登录后请务必修改 `admin` 密码与 `agent_token`。
+- **客户端为单一原生二进制 + systemd**（设计借鉴[哪吒监控](https://github.com/nezhahq/nezhahq.github.io)）：直接读取宿主机 `/etc/os-release` 与 `/proc`，因此面板显示的是**真实宿主系统/配置/流量**，不会因容器内运行而误报（如 Alpine）。服务端自监控同样为原生进程。
+- **优雅注销**：`systemctl stop yufu-agent` 或 `docker stop` 会触发 agent 向服务端发送注销请求，服务端立即删除该机器记录；亦可用 `uninstall-agent.sh` 一条命令完成「通知服务端 + 清理本机」。
