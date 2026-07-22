@@ -121,6 +121,8 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 /* 发行版 logo 为内联 SVG，fill=currentColor，靠 color 跟随主题文字色 */
 .distro-ico { width: 18px; height: 18px; vertical-align: middle; flex: none; color: var(--text); }
 .flag-ico { width: 20px; height: 15px; object-fit: cover; border-radius: 2px; vertical-align: middle; box-shadow: 0 0 0 1px rgba(0,0,0,.10); flex: none; background: var(--bg-3); }
+.ip-line { display: block; color: var(--text-2); font-size: 12px; line-height: 1.5; word-break: break-all; }
+.ip-note { font-size: 11px; }
 .card-name {
   font-size: 15px; font-weight: 700; color: var(--text);
   background: transparent; border: 1px solid transparent; border-radius: 6px;
@@ -143,6 +145,7 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
   display: flex; gap: 16px; font-size: 12px; color: var(--text-2); margin-bottom: 8px;
 }
 .card-meta span { display: flex; align-items: center; gap: 4px; }
+.card-ip { margin: 4px 0 10px; }
 .card-config {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   font-size: 12px; color: var(--primary); background: rgba(88,166,255,.10);

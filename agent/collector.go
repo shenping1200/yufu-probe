@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -22,6 +23,8 @@ type Snapshot struct {
 	Hostname  string  `json:"hostname"`
 	IP        string  `json:"ip"`
 	PublicIP  string  `json:"public_ip"`
+	PublicIP4 string  `json:"public_ip4"`
+	PublicIP6 string  `json:"public_ip6"`
 	OS        string  `json:"os"`
 	Platform  string  `json:"platform"`
 	BootTime  int64   `json:"boot_time"`
@@ -45,7 +48,8 @@ type collector struct {
 	lastRx       uint64
 	lastTx       uint64
 	hasPrev      bool
-	pubIP        string
+	pubIP4       string
+	pubIP6       string
 	pubIPAt      int64
 }
 
@@ -70,22 +74,53 @@ func getOutboundIP() string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
-// publicIP 获取本机公网 IP（外部服务探测，5 分钟缓存，失败返回空串）
-func (c *collector) publicIP() string {
-	now := time.Now().Unix()
-	if c.pubIP != "" && now-c.pubIPAt < 300 {
-		return c.pubIP
+// firstNonEmpty 返回第一个非空字符串
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	if ip := fetchPublicIP(); ip != "" {
-		c.pubIP = ip
-		c.pubIPAt = now
-	}
-	return c.pubIP
+	return ""
 }
 
-// fetchPublicIP 通过公网 IP 查询服务获取出口公网地址（优先 ipwho.is，失败回退 ipify）
-func fetchPublicIP() string {
-	client := &http.Client{Timeout: 4 * time.Second}
+// publicIPv4 / publicIPv6 获取本机公网 IPv4 / IPv6。
+// 通过强制走对应 IP 栈探测外部服务（等价 curl -4 / curl -6）分别取得，
+// 无该栈的机器对应值为空串。v4/v6 共用一个 5 分钟缓存，保证两端取数一致。
+func (c *collector) publicIPv4() string {
+	c.ensurePublicIP()
+	return c.pubIP4
+}
+
+func (c *collector) publicIPv6() string {
+	c.ensurePublicIP()
+	return c.pubIP6
+}
+
+// ensurePublicIP 刷新并缓存公网 v4/v6（5 分钟 TTL）
+func (c *collector) ensurePublicIP() {
+	now := time.Now().Unix()
+	if c.pubIPAt != 0 && now-c.pubIPAt < 300 {
+		return
+	}
+	c.pubIP4 = fetchPublicIPOver("tcp4")
+	c.pubIP6 = fetchPublicIPOver("tcp6")
+	c.pubIPAt = now
+}
+
+// fetchPublicIPOver 通过公网 IP 查询服务获取出口公网地址，
+// network 指定强制使用的源 IP 栈（tcp4 / tcp6），从而分别拿到 v4 / v6 公网 IP。
+// 优先 ipwho.is，失败回退 ipify。失败返回空串。
+func fetchPublicIPOver(network string) string {
+	dialer := &net.Dialer{Timeout: 4 * time.Second}
+	client := &http.Client{
+		Timeout: 4 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
+			},
+		},
+	}
 	urls := []string{"https://ipwho.is/", "https://api.ipify.org?format=json"}
 	for _, u := range urls {
 		resp, err := client.Get(u)
@@ -249,7 +284,9 @@ func (c *collector) collect(intervalSec float64) (*Snapshot, error) {
 	return &Snapshot{
 		Hostname:  info.Hostname,
 		IP:        getOutboundIP(),
-		PublicIP:  c.publicIP(),
+		PublicIP:  firstNonEmpty(c.publicIPv4(), c.publicIPv6()),
+		PublicIP4: c.publicIPv4(),
+		PublicIP6: c.publicIPv6(),
 		OS:        firstUpper(info.OS),
 		Platform:  firstUpper(info.Platform),
 		BootTime:  int64(bt),

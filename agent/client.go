@@ -27,6 +27,8 @@ func buildMsg(uuid string, s *Snapshot) map[string]interface{} {
 		"hostname":  s.Hostname,
 		"ip":        s.IP,
 		"public_ip": s.PublicIP,
+		"public_ip4": s.PublicIP4,
+		"public_ip6": s.PublicIP6,
 		"os":        s.OS,
 		"platform":  s.Platform,
 		"boot_time":  s.BootTime,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"net"
 	"sort"
 	"sync"
 	"time"
@@ -81,6 +82,18 @@ func (s *ServerState) ApplyReport(rep AgentReport, country string) {
 	cur.Hostname = rep.Hostname
 	cur.IP = rep.IP
 	cur.PublicIP = rep.PublicIP
+	// 双栈公网 IP：优先用 agent 显式上报的 v4/v6；
+	// 老 agent 只报单个 public_ip 时，按 IP 格式归类到 v4 或 v6，
+	// 保证滚动升级（新 server + 老 agent）期间列表不空白。
+	cur.PublicIP4 = rep.PublicIP4
+	cur.PublicIP6 = rep.PublicIP6
+	if rep.PublicIP4 == "" && rep.PublicIP6 == "" && rep.PublicIP != "" {
+		if net.ParseIP(rep.PublicIP).To4() != nil {
+			cur.PublicIP4 = rep.PublicIP
+		} else {
+			cur.PublicIP6 = rep.PublicIP
+		}
+	}
 	cur.BootTime = rep.BootTime
 	cur.Uptime = rep.Uptime
 	cur.CPU = rep.CPU

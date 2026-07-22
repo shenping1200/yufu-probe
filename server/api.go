@@ -41,6 +41,8 @@ type AgentReport struct {
 	Hostname  string  `json:"hostname"`
 	IP        string  `json:"ip"`
 	PublicIP  string  `json:"public_ip"`
+	PublicIP4 string  `json:"public_ip4"`
+	PublicIP6 string  `json:"public_ip6"`
 	OS        string  `json:"os"`
 	Platform  string  `json:"platform"`
 	BootTime  int64   `json:"boot_time"`
@@ -413,11 +415,18 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if err := json.Unmarshal(data, &rep); err != nil || rep.UUID == "" {
 				continue
 			}
-			// 优先用公网 IP 做地理定位，缺失时回退到上报的内网 IP
-			geoIP := rep.PublicIP
-			if geoIP == "" {
-				geoIP = rep.IP
-			}
+		// 地理定位优先用公网 IPv4，其次 v6，再其次老字段 public_ip，
+		// 缺失时回退到上报的内网 IP
+		geoIP := rep.PublicIP4
+		if geoIP == "" {
+			geoIP = rep.PublicIP6
+		}
+		if geoIP == "" {
+			geoIP = rep.PublicIP
+		}
+		if geoIP == "" {
+			geoIP = rep.IP
+		}
 			country := ""
 			if !isPrivateIP(geoIP) {
 				country = lookupCountry(db, geoIP, rep.UUID)

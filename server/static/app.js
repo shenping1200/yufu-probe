@@ -251,6 +251,20 @@ function flagImage(code, title) {
 function isPrivateIP(ip) {
   return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(ip) || ip === '127.0.0.1' || ip === '::1';
 }
+// ipBlockHTML 双栈公网 IP 展示：v4 在上、v6 在下，有哪个显示哪个；
+// 纯 v6 / 纯 v4 只显示一行；无公网 IP 时回退本机 IP 并标注"内网"。
+function ipBlockHTML(a) {
+  const v4 = a.public_ip4 || '';
+  const v6 = a.public_ip6 || '';
+  if (v4 || v6) {
+    return [v4, v6].filter(Boolean)
+      .map(ip => `<span class="ip-line">${escapeHtml(ip)}</span>`)
+      .join('');
+  }
+  const lan = a.public_ip || a.ip;
+  const note = a.public_ip ? '' : ' <span class="ip-note">(内网)</span>';
+  return `<span class="ip-line">${escapeHtml(lan)}${note}</span>`;
+}
 function percent(used, total) {
   if (!total) return 0;
   return Math.min(100, (used / total) * 100);
@@ -492,6 +506,7 @@ function cardHTML(a) {
         <span>${flagImg} ${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}</span>
         <span>⏱️ ${fmtUptime(a.uptime)}</span>
       </div>
+      <div class="card-ip">${ipBlockHTML(a)}</div>
       <div class="card-config">
         <span class="card-config-text">${escapeHtml(fmtConfig(a))}</span>
         ${cdBadge}
@@ -611,16 +626,13 @@ function listRowHTML(a) {
   const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
   const loc = a.country ? (a.country.replace(stripFlagEmoji(a.country) || '', '').trim()) : '';
   const flagImg = flagImage(a.country_code, loc);
-  // IP 列：优先显示公网 IP（与国旗/国家一致，便于实际访问），缺失时回退本机 IP 并标"内网"
-  const displayIP = a.public_ip || a.ip;
-  const ipNote = !a.public_ip && isPrivateIP(a.ip) ? ' <span style="color:var(--text-2);font-size:11px">(内网)</span>' : '';
   const cd = fmtCountdown(a.expire_at);
   const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
   return `
     <tr>
       <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
       <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
-      <td><span class="flag">${flagImg}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br><span style="color:var(--text-2);font-size:12px">${escapeHtml(displayIP)}${ipNote}</span></td>
+      <td><span class="flag">${flagImg}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br>${ipBlockHTML(a)}</td>
       <td>${escapeHtml(fmtConfig(a))}</td>
       <td>${fmtUptime(a.uptime)}${cdHtml}</td>
       <td>
