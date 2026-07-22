@@ -227,3 +227,33 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
   .summary-cards { padding: 16px 14px; }
   header { padding: 14px 16px; flex-wrap: wrap; gap: 10px; }
 }
+
+/* ---------- 编辑按钮 / 备注 ---------- */
+.btn-edit {
+  margin-left: 6px; padding: 2px 8px; font-size: 13px; line-height: 1.4;
+  border: 1px solid var(--border); background: var(--bg-3); color: var(--text-2);
+  border-radius: 6px; cursor: pointer;
+}
+.btn-edit:hover { border-color: var(--primary); color: var(--primary); }
+.card-remark { margin-top: 8px; font-size: 12px; color: var(--text-2); word-break: break-all; }
+
+/* ---------- 编辑模态框 ---------- */
+.modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.5);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal.hidden { display: none; }
+.modal-box {
+  width: 360px; max-width: 90vw; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 14px; padding: 22px; box-shadow: 0 12px 40px rgba(0,0,0,.35);
+}
+.modal-box h3 { margin: 0 0 14px; font-size: 16px; }
+.modal-box label { display: block; font-size: 13px; color: var(--text-2); margin: 12px 0 6px; }
+.modal-box input, .modal-box textarea {
+  width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-3); color: var(--text);
+  font-size: 14px; font-family: inherit; resize: vertical;
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.modal-actions button { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-3); color: var(--text); cursor: pointer; }
+.modal-actions .primary { background: var(--primary); border-color: var(--primary); color: #fff; }

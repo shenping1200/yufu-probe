@@ -217,6 +217,7 @@ function renderCard() {
         <div class="card-title">
           <span class="flag">${flag}</span>
           <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
+          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注">✎</button>
         </div>
         <div class="card-status">
           <span class="dot ${a.online ? 'on' : 'off'}"></span>
@@ -229,6 +230,7 @@ function renderCard() {
         <span>⏱️ ${fmtUptime(a.uptime)}</span>
       </div>
       <div class="card-config">${escapeHtml(fmtConfig(a))}</div>
+      ${a.remark ? `<div class="card-remark">📝 ${escapeHtml(a.remark)}</div>` : ''}
       <div class="card-metrics">
         <div class="metric">
           <div class="metric-label">CPU ${a.cpu.toFixed(1)}%</div>
@@ -262,8 +264,45 @@ function renderCard() {
     `;
     grid.appendChild(card);
   }
+  grid.querySelectorAll('.btn-edit').forEach(btn => {
+    btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); };
+  });
   bindAliasInputs('.card-name');
 }
+
+// ---------- 编辑名称/备注 ----------
+let editUUID = null;
+function openEdit(uuid) {
+  const a = state.agents.find(x => x.uuid === uuid);
+  if (!a) return;
+  editUUID = uuid;
+  document.getElementById('editName').value = a.alias || '';
+  document.getElementById('editRemark').value = a.remark || '';
+  document.getElementById('editModal').classList.remove('hidden');
+}
+function closeEdit() {
+  document.getElementById('editModal').classList.add('hidden');
+  editUUID = null;
+}
+document.getElementById('editCancel').onclick = closeEdit;
+document.getElementById('editModal').addEventListener('click', e => {
+  if (e.target.id === 'editModal') closeEdit();
+});
+document.getElementById('editSave').onclick = async () => {
+  if (!editUUID) return;
+  const name = document.getElementById('editName').value;
+  const remark = document.getElementById('editRemark').value;
+  await fetch('/api/agents/' + editUUID, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, remark }),
+  });
+  const a = state.agents.find(x => x.uuid === editUUID);
+  if (a) { a.alias = name; a.remark = remark; }
+  closeEdit();
+  render();
+  if (state.currentUUID === editUUID) drawDetail();
+};
 
 function renderList() {
   const table = document.getElementById('agentsTable');
@@ -286,7 +325,7 @@ function renderList() {
         </td>
         <td><span class="down">↓${fmtRate(a.rx_rate)}</span><br><span class="up">↑${fmtRate(a.tx_rate)}</span></td>
         <td><span class="down">${fmtBytes(a.rx_month)}</span><br><span class="up">${fmtBytes(a.tx_month)}</span></td>
-        <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button></td>
+        <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button></td>
       </tr>
     `;
   }).join('');
@@ -312,6 +351,9 @@ function renderList() {
 
   table.querySelectorAll('.btn-chart').forEach(btn => {
     btn.onclick = () => openDetail(btn.dataset.uuid);
+  });
+  table.querySelectorAll('.btn-edit').forEach(btn => {
+    btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); };
   });
   bindAliasInputs('.list-name');
 }

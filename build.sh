@@ -14,7 +14,7 @@ for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 d
   ext=""
   if [ "$os" = "windows" ]; then ext=".exe"; fi
   echo "    agent $target"
-  env CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -o "dist/agent-$os-$arch$ext" ./agent
+  env CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -o "dist/yufu-agent-$os-$arch$ext" ./agent
 done
 
 echo "==> done -> dist/"

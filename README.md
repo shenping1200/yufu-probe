@@ -5,7 +5,7 @@
 ## 功能
 
 - **客户端采集**：IP、开机时间、CPU 核心数、内存/磁盘总量、实时上下行流量速率、自然月累计流量、CPU / 内存 / 磁盘使用率
-- **Web 面板**：卡片 / 列表双视图、汇总看板、机器配置展示、行内编辑别名、单台实时流量曲线（ECharts）
+- **Web 面板**：卡片 / 列表双视图、汇总看板、机器配置展示、编辑机器名称与备注、单台实时流量曲线（ECharts）
 - **深色 / 浅色主题**：一键切换，偏好自动保存
 - **鉴权**：Web 端账号密码登录（session）+ 客户端 Token 接入，双保险
 - **跨平台客户端**：Linux / Windows / macOS，amd64 / arm64
@@ -37,7 +37,7 @@ probe/
 ```bash
 chmod +x build.sh
 ./build.sh
-# 产物在 dist/：probe-server + agent-<os>-<arch>
+# 产物在 dist/：probe-server + yufu-agent-<os>-<arch>
 ```
 
 或直接用 `go build ./server ./agent`。
@@ -56,11 +56,13 @@ chmod +x build.sh
 
 ```bash
 # 通过参数
-./dist/agent-linux-amd64 -server ws://1.2.3.4:8080 -token change-me-agent-token -interval 5
+./dist/yufu-agent-linux-amd64 -server ws://1.2.3.4:8080 -token change-me-agent-token -interval 5
 
 # 或通过配置文件
-./dist/agent-linux-amd64 -config configs/agent.yaml
+./dist/yufu-agent-linux-amd64 -config configs/agent.yaml
 ```
+
+> 客户端以**宿主机原生进程**运行（不是容器），`gopsutil` 直接读取宿主机 `/proc`，因此 OS、配置、流量均为**真实宿主机数据**。网卡自动选择「默认路由网卡」（如 `eth0`/`ens3`），流量统计反映真实对外带宽。
 
 浏览器打开 `http://<服务端IP>:39689`，默认账号 `admin / admin`（请在 `server.yaml` 中修改）。
 
@@ -84,6 +86,21 @@ git clone https://github.com/shenping1200/yufu-probe.git
 cd yufu-probe
 bash install.sh
 ```
+
+## 客户端一键安装（推荐，秒级）
+
+在**每一台要监控的机器**上执行（无需 Docker、无需编译，下载预编译静态二进制并注册 systemd）：
+
+```bash
+bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/install-agent.sh) \
+  ws://<服务端IP>:39689 <AgentToken>
+```
+
+- 第一个参数为服务端 `ws://IP:端口`（也可只填 `IP:端口`），第二个为服务端安装时设置的 **Agent Token**（面板「安装完成」页可见）。
+- 脚本自动探测架构（x86_64 / aarch64），下载 `dist/yufu-agent-linux-<arch>`，写入 `/etc/yufu-agent.conf` 并注册 `yufu-agent.service`（开机自启、`Restart=always`）。
+- 完成后在服务端面板即可看到该机器，OS / 配置 / 流量均为宿主机真实数据。
+
+删除客户端：`systemctl stop yufu-agent && systemctl disable yufu-agent && rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf && systemctl daemon-reload`。
 
 ## Docker 手动部署（推荐，仅 Linux）
 
@@ -131,7 +148,8 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 | POST | `/api/logout` | 退出 |
 | GET | `/api/me` | 当前登录用户 |
 | GET | `/api/agents` | 机器列表（含本月累计） |
-| PUT | `/api/agents/:uuid/alias` | 设置别名 |
+| PUT | `/api/agents/:uuid/alias` | 设置别名（行内编辑） |
+| PATCH | `/api/agents/:uuid` | 更新显示名称与备注 |
 | GET | `/api/agents/:uuid/traffic` | 各自然月流量历史 |
 | WS | `/ws/agent?token=` | 客户端上报通道 |
 | WS | `/ws/viewer` | 浏览器实时订阅（需登录） |
@@ -139,8 +157,9 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 ## 流量累计逻辑
 
 - 客户端每次上报**自上次以来的流量增量（字节）**，由服务端按 `uuid + 自然月（YYYY-MM）` 累加。
+- 客户端自动选择「默认路由网卡」（优先 `/proc/net/route` 中的默认路由接口，如 `eth0`/`ens3`，回退累加所有非虚拟网卡），因此「本月流量」反映真实对外带宽，不会因选到 `docker0`/`br-*` 等虚拟网卡而偏小。
 - 累计值存储于服务端，即使客户端重启也不丢失；跨月自动新建当月记录，旧月历史可查。
-- Web 面板「本月累计」= 当前自然月入站 + 出站累计。
+- Web 面板「本月累计」= 当前自然月入站 + 出站累计（每月 1 日重置）。
 
 ## 部署建议
 

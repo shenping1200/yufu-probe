@@ -1,8 +1,13 @@
-# 构建产物 / 预编译二进制
-/dist/
+# 构建产物 / 预编译二进制（保留可下载的 Linux 静态 agent 二进制）
+dist/*
+!dist/yufu-agent-linux-amd64
+!dist/yufu-agent-linux-arm64
 *.exe
 probe-server
 probe-agent
+agent-*
+yufu-agent-darwin-*
+yufu-agent-windows-*
 
 # 运行时数据
 /data/

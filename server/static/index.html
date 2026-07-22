@@ -73,6 +73,20 @@
     </div>
     <div id="chart" style="width:100%;height:320px;"></div>
   </div>
+
+  <div id="editModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>编辑机器</h3>
+      <label>显示名称</label>
+      <input id="editName" placeholder="留空则显示主机名">
+      <label>备注</label>
+      <textarea id="editRemark" rows="3" placeholder="可选，例如：生产环境 Web 节点"></textarea>
+      <div class="modal-actions">
+        <button id="editCancel">取消</button>
+        <button id="editSave" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>

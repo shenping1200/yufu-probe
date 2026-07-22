@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -157,25 +160,64 @@ func (c *collector) cpuUsage() float64 {
 	return (dTotal - dIdle) / dTotal * 100
 }
 
+// isVirtualIface 判断是否为虚拟/容器网卡（docker0、br-xxx、veth、virbr 等）
+func isVirtualIface(name string) bool {
+	for _, p := range []string{"lo", "docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "tun", "tap"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultRouteIface 读取 /proc/net/route 找到默认路由所在的网卡（Linux）
+func defaultRouteIface() string {
+	f, err := os.Open("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Scan() // 跳过表头
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		// Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+		if len(fields) < 8 {
+			continue
+		}
+		// 默认路由：目标 0.0.0.0 且掩码 0.0.0.0
+		if fields[1] == "00000000" && fields[7] == "00000000" {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
 // netBytes 读取监控网卡的累计收发字节数
 func (c *collector) netBytes() (uint64, uint64) {
 	stats, err := gnet.IOCounters(true)
 	if err != nil || len(stats) == 0 {
 		return 0, 0
 	}
+	// 1) 优先使用默认路由网卡（真实对外网卡，如 eth0/ens3）
 	iface := c.iface
+	if iface == "" {
+		iface = defaultRouteIface()
+	}
 	if iface == "" {
 		iface = defaultIface()
 	}
-	for _, s := range stats {
-		if s.Name == iface {
-			return s.BytesRecv, s.BytesSent
+	if iface != "" {
+		for _, s := range stats {
+			if s.Name == iface {
+				return s.BytesRecv, s.BytesSent
+			}
 		}
 	}
-	// 回退：累加所有非回环网卡
+	// 2) 回退：累加所有非回环、非虚拟网卡
 	var rx, tx uint64
 	for _, s := range stats {
-		if s.Name == "lo" {
+		if isVirtualIface(s.Name) {
 			continue
 		}
 		rx += s.BytesRecv
