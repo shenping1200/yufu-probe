@@ -100,7 +100,32 @@ bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/
 - 脚本自动探测架构（x86_64 / aarch64），下载 `dist/yufu-agent-linux-<arch>`，写入 `/etc/yufu-agent.conf` 并注册 `yufu-agent.service`（开机自启、`Restart=always`）。
 - 完成后在服务端面板即可看到该机器，OS / 配置 / 流量均为宿主机真实数据。
 
-删除客户端：`systemctl stop yufu-agent && systemctl disable yufu-agent && rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf && systemctl daemon-reload`。
+## 卸载
+
+**服务端（Docker，默认安装目录 `/opt/yufu-probe`）**
+
+```bash
+cd /opt/yufu-probe
+docker compose down            # 停止并移除容器（含探针自监控 agent）
+# 如需彻底删除安装目录与所有数据：
+rm -rf /opt/yufu-probe
+```
+
+**客户端 —— 旧版（Docker 容器 `probe-agent`）**
+
+> 首次安装时自监控用的 Docker 容器会随上面的 `docker compose down` 一并删除；若单独残留：
+
+```bash
+docker rm -f probe-agent
+```
+
+**客户端 —— 新版（systemd 原生 agent）**
+
+```bash
+systemctl stop yufu-agent && systemctl disable yufu-agent && \
+  rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf && \
+  systemctl daemon-reload
+```
 
 ## Docker 手动部署（推荐，仅 Linux）
 
