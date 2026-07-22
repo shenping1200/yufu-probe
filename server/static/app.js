@@ -172,6 +172,13 @@ function flagFromCountry(country) {
   const m = country.match(/^[\u{1F1E6}-\u{1F1FF}]{2}\uFE0F?/u);
   return m ? m[0] : '';
 }
+// 按 OS 选图标：Linux/其它→🐧，Windows→🪟，macOS/Darwin→🍎
+function osIcon(os) {
+  const o = (os || '').toLowerCase();
+  if (o.includes('windows')) return '🪟';
+  if (o.includes('darwin') || o.includes('mac')) return '🍎';
+  return '🐧';
+}
 function isPrivateIP(ip) {
   return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(ip) || ip === '127.0.0.1' || ip === '::1';
 }
@@ -392,7 +399,8 @@ function cardHTML(a) {
   const flag = flagFromCountry(a.country) || '🌍';
   const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
   const loc = a.country ? (a.country.replace(flagFromCountry(a.country) || '', '').trim()) : (isPrivateIP(a.ip) ? '内网' : '');
-  const osText = [a.os, a.platform].filter(Boolean).join(' · ') || 'Linux';
+  // 系统名只显示发行版（去掉冗余的 "Linux · " 前缀），图标按 OS 区分
+  const osName = a.platform || a.os || 'Linux';
 
   const cd = fmtCountdown(a.expire_at);
   const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
@@ -411,8 +419,8 @@ function cardHTML(a) {
         </div>
       </div>
       <div class="card-meta">
-        <span>🖥️ ${escapeHtml(osText)}</span>
-        <span>📍 ${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}</span>
+        <span>${osIcon(a.os)} ${escapeHtml(osName)}</span>
+        <span>${flag} ${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}</span>
         <span>⏱️ ${fmtUptime(a.uptime)}</span>
       </div>
       <div class="card-config">
@@ -435,7 +443,10 @@ function cardHTML(a) {
         </div>
         <div class="metric">
           <div class="metric-label">实时速率</div>
-          <div class="metric-value"><span class="down">↓${fmtRate(a.rx_rate)}</span> <span class="up">↑${fmtRate(a.tx_rate)}</span></div>
+          <div class="metric-value speed">
+            <div class="down">↓${fmtRate(a.rx_rate)}</div>
+            <div class="up">↑${fmtRate(a.tx_rate)}</div>
+          </div>
         </div>
       </div>
       <div class="card-traffic">

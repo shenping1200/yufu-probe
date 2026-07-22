@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# 渔夫探针 (YuFu Probe) 本地升级脚本
+# 用法（在已安装服务端的那台 VPS 上执行）：
+#   方式1：cd /opt/yufu-probe && bash upgrade.sh
+#   方式2：bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/upgrade.sh)
+# 作用：
+#   1) 拉取最新代码（install.sh / docker-compose.yml 等）
+#   2) 拉取最新 GHCR 预编译镜像
+#   3) 重启容器
+# 已注册的客户端与 SQLite 数据库均保留（只重启容器，卷与挂载不动）。
+
+set -e
+
+# 安装目录：默认 /opt/yufu-probe，可通过环境变量覆盖
+INSTALL_DIR="${INSTALL_DIR:-/opt/yufu-probe}"
+COMPOSE="docker compose"
+
+# ---------- 工具函数 ----------
+info() { echo -e "\033[34m[INFO]\033[0m $*"; }
+ok()   { echo -e "\033[32m[OK]\033[0m $*"; }
+warn() { echo -e "\033[33m[WARN]\033[0m $*"; }
+err()  { echo -e "\033[31m[ERR]\033[0m $*"; exit 1; }
+
+# ---------- 环境检查 ----------
+command -v docker >/dev/null || err "未检测到 docker，请先安装 Docker"
+if docker compose version &>/dev/null; then
+  COMPOSE="docker compose"
+elif docker-compose version &>/dev/null; then
+  COMPOSE="docker-compose"
+else
+  err "未检测到 docker compose 插件或 docker-compose"
+fi
+
+# 定位安装目录
+if [ ! -d "$INSTALL_DIR" ]; then
+  err "未找到安装目录 $INSTALL_DIR
+如果你的安装目录不是默认值，请设置环境变量再执行：
+  INSTALL_DIR=/your/path bash upgrade.sh"
+fi
+cd "$INSTALL_DIR" || err "无法进入 $INSTALL_DIR"
+
+if [ ! -f docker-compose.yml ]; then
+  err "$INSTALL_DIR 缺少 docker-compose.yml，不像已安装的目录
+（请确认这是用 install.sh 安装的服务端目录）"
+fi
+
+ok "安装目录: $INSTALL_DIR"
+ok "compose  : $COMPOSE"
+
+# ---------- 1. 拉取最新代码 ----------
+info "拉取最新代码..."
+if [ -d .git ]; then
+  if git pull --rebase --autostash 2>/dev/null; then
+    ok "代码已更新到最新"
+  else
+    warn "git pull 失败（可能是网络问题或本地有冲突），将跳过代码更新、仅升级容器镜像"
+  fi
+else
+  warn "不是 git 仓库，跳过代码更新（仅升级容器镜像）"
+fi
+
+# ---------- 2. 拉取最新预编译镜像 ----------
+info "拉取最新 GHCR 预编译镜像..."
+if $COMPOSE pull server; then
+  ok "镜像已拉取"
+else
+  err "拉取镜像失败，请检查网络或 GHCR 可达性（也可以临时用 install.sh 重装）"
+fi
+
+# ---------- 3. 重启服务 ----------
+info "重启服务..."
+$COMPOSE up -d
+ok "升级完成"
+
+# ---------- 状态输出 ----------
+echo ""
+echo "=========================================="
+echo "  升级完成"
+echo "=========================================="
+echo "  已注册的客户端与数据库均保留。"
+echo ""
+echo "  常用命令："
+echo "    cd $INSTALL_DIR"
+echo "    $COMPOSE ps              # 查看容器状态"
+echo "    $COMPOSE logs -f server  # 查看实时日志"
+echo "    $COMPOSE restart server  # 手动重启服务端"
+echo "=========================================="

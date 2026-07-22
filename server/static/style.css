@@ -155,6 +155,18 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 }
 .metric-label { font-size: 11px; color: var(--text-2); margin-bottom: 6px; }
 .metric-value { font-size: 13px; font-weight: 600; }
+/* 实时速率：固定为下行/上行两行竖排，min-height 锁死两行高度，
+   避免数字变长换行时整张卡片高度跳动 */
+.metric-value.speed {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  justify-content: center;
+  min-height: 2.6em;
+  line-height: 1.2;
+}
+.metric-value.speed .down,
+.metric-value.speed .up { white-space: nowrap; }
 .metric-bar { height: 5px; background: var(--bg); border-radius: 3px; margin-top: 6px; overflow: hidden; }
 .metric-bar > div { height: 100%; border-radius: 3px; }
 .bar-cpu { background: linear-gradient(90deg, #58a6ff, #79c0ff); }

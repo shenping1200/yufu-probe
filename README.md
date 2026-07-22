@@ -101,6 +101,20 @@ cd yufu-probe
 bash install.sh
 ```
 
+## 本地升级（已安装的服务端）
+
+服务端已升级为 GHCR 预编译镜像，升级只需拉取新镜像并重启容器（数据与已注册客户端全部保留）：
+
+```bash
+# 在已安装服务端的 VPS 上执行（默认安装目录 /opt/yufu-probe）
+cd /opt/yufu-probe && bash upgrade.sh
+
+# 或一条命令远程升级（需 root + curl）
+bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/upgrade.sh)
+```
+
+升级脚本流程：`git pull` 取最新 → `docker compose pull server` 拉新镜像 → `docker compose up -d` 重启。`probe-data` 数据卷与挂载的 `configs/server.yaml` 保持不变。
+
 ## 客户端一键安装（推荐，秒级）
 
 在**每一台要监控的机器**上执行（无需 Docker、无需编译，下载预编译静态二进制并注册 systemd）：
