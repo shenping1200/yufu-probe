@@ -60,9 +60,11 @@ type AgentReport struct {
 // broadcastAgents 把当前内存中的全量状态推送给所有 viewer。
 // 由 main.go 的定时 ticker 周期调用（不再在每条上报里调用），
 // 因此广播频率固定为 1 次/秒，与客户端数量解耦。
+// 同时携带当前「分组名注册表」，使前端能正确渲染「+ 新建分组」等空分组。
 func broadcastAgents(hub *Hub) {
 	list := live.Snapshot()
-	payload, err := json.Marshal(map[string]interface{}{"type": "agents", "data": list})
+	groups := live.Groups()
+	payload, err := json.Marshal(map[string]interface{}{"type": "agents", "data": list, "groups": groups})
 	if err != nil {
 		return
 	}
@@ -228,13 +230,17 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 				}
 			}
 		}
-		if err := UpdateAgent(db, uuid, alias, remark, group, expireAt); err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		live.UpdateAdmin(uuid, alias, remark, group, expireAt)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	if err := UpdateAgent(db, uuid, alias, remark, group, expireAt); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	live.UpdateAdmin(uuid, alias, remark, group, expireAt)
+	// 保持内存态「分组名注册表」与 DB 一致：通过编辑弹窗手输的新名字也要注册进来
+	if group != "" {
+		live.AddGroup(group)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
 }
 
@@ -290,6 +296,53 @@ func deleteGroupHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 		broadcastAgents(hub)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "affected": n, "name": name})
+	}
+}
+
+// 校验分组名合法性：禁止空、保留名、含 / \
+func isValidGroupName(name string) bool {
+	if name == "" || name == reservedOfflineGroup || name == "未分组" {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	return true
+}
+
+// createGroupHandler 新建分组（不要求任何客户端属于此分组，可建一个空组供后续使用）
+func createGroupHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if !isValidGroupName(name) {
+			http.Error(w, "invalid group name", http.StatusBadRequest)
+			return
+		}
+		if err := AddGroup(db, name); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		live.AddGroup(name)
+		broadcastAgents(hub)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": name})
+	}
+}
+
+// listGroupsHandler 返回当前所有已注册分组名（用于编辑机器的下拉框）
+func listGroupsHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 优先使用内存态（包含本进程内新建的组，与 WS 广播一致）
+		gs := live.Groups()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(gs)
 	}
 }
 
@@ -411,7 +464,9 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/agents", requireLogin(db, agentsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/agents/{uuid}/alias", requireLogin(db, aliasHandler(db))).Methods("PUT")
 	r.HandleFunc("/api/agents/{uuid}", requireLogin(db, updateAgentHandler(db))).Methods("PATCH")
-	// 分组级管理：重命名 / 删除（删除会把成员移回「未分组」）
+	// 分组级管理：新建 / 列表 / 重命名 / 删除（删除会把成员移回「未分组」）
+	r.HandleFunc("/api/groups", requireLogin(db, createGroupHandler(db, hub))).Methods("POST")
+	r.HandleFunc("/api/groups", requireLogin(db, listGroupsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/groups/{name}", requireLogin(db, renameGroupHandler(db, hub))).Methods("PATCH")
 	r.HandleFunc("/api/groups/{name}", requireLogin(db, deleteGroupHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}", requireAgentToken(cfg, deleteAgentHandler(db, hub))).Methods("DELETE")

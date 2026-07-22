@@ -329,6 +329,20 @@ body.light .modal-box input[type=date] { color-scheme: light; }
 .group-tab.offline:hover { border-color: var(--danger); color: var(--danger); }
 .group-tab.offline.active { background: var(--danger); border-color: var(--danger); color: #fff; }
 .group-tab.offline.active .gt-count { background: rgba(255,255,255,.25); color: #fff; }
+/* 「未分组」系统级默认标签：样式略低调，不提供管理操作 */
+.group-tab.muted { color: var(--text-2); border-style: dashed; }
+
+/* 「+ 新建分组」按钮：始终排在标签条最末尾，区别于普通标签 */
+.group-tab.new-group {
+  border-style: dashed;
+  color: var(--primary);
+  background: transparent;
+}
+.group-tab.new-group:hover {
+  background: rgba(88,166,255,.08);
+  color: var(--primary);
+  border-color: var(--primary);
+}
 
 /* 自定义分组标签：悬停显示的重命名/删除操作 */
 .group-tab-wrap { display: inline-flex; align-items: center; }

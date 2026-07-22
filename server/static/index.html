@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>探针监控面板</title>
-<link rel="stylesheet" href="/style.css?v=9">
+<link rel="stylesheet" href="/style.css?v=10">
 </head>
 <body>
 <div id="login" class="login-box">
@@ -83,7 +83,8 @@
       <label>显示名称</label>
       <input id="editName" placeholder="留空则显示主机名">
       <label>分组 <span style="color:var(--text-2);font-weight:normal">（自定义分组名，离线的客户端自动进入「离线」分组）</span></label>
-      <input id="editGroup" placeholder="留空为「未分组」">
+      <input id="editGroup" list="group-options" placeholder="留空为「未分组」，可从下拉选择或手输新名字">
+      <datalist id="group-options"></datalist>
       <label>备注</label>
       <textarea id="editRemark" rows="3" placeholder="可选，例如：生产环境 Web 节点"></textarea>
       <label>VPS 到期时间 <span style="color:var(--text-2);font-weight:normal">（留空表示不设置）</span></label>
@@ -109,6 +110,6 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-<script src="/app.js?v=9"></script>
+<script src="/app.js?v=10"></script>
 </body>
 </html>

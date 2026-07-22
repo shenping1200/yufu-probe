@@ -98,6 +98,10 @@ func InitDB(path string) (*sql.DB, error) {
 			token TEXT PRIMARY KEY,
 			created_at INTEGER DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS groups (
+			name TEXT PRIMARY KEY,
+			created_at INTEGER DEFAULT 0
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err = db.Exec(s); err != nil {
@@ -194,10 +198,14 @@ func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 
 // UpdateAgent 更新机器的显示名称(alias)、备注(remark)、分组(group_name)与到期时间(expireAt)。
 // expireAt 为 nil 表示清空到期时间（设为 NULL）。
+// 如果 group 不为空，会自动注册到 groups 表（INSERT OR IGNORE），保持「分组名注册表」与实际使用同步。
 func UpdateAgent(db *sql.DB, uuid, alias, remark, group string, expireAt *int64) error {
 	var v sql.NullInt64
 	if expireAt != nil {
 		v = sql.NullInt64{Int64: *expireAt, Valid: true}
+	}
+	if group != "" {
+		_, _ = db.Exec(`INSERT OR IGNORE INTO groups (name, created_at) VALUES (?, ?)`, group, time.Now().Unix())
 	}
 	_, err := db.Exec(`UPDATE agents SET alias=?, remark=?, group_name=?, expire_at=? WHERE uuid=?`, alias, remark, group, v, uuid)
 	return err
@@ -215,8 +223,11 @@ func DeleteAgent(db *sql.DB, uuid string) error {
 	return nil
 }
 
-// RenameGroup 把所有 group_name=oldName 的客户端改成 newName，返回受影响行数。
+// RenameGroup 重命名分组：同步更新 groups 表（注册表）与 agents.group_name，返回受影响行数（agent 数）。
 func RenameGroup(db *sql.DB, oldName, newName string) (int64, error) {
+	if _, err := db.Exec(`UPDATE groups SET name=? WHERE name=?`, newName, oldName); err != nil {
+		return 0, err
+	}
 	res, err := db.Exec(`UPDATE agents SET group_name=? WHERE group_name=?`, newName, oldName)
 	if err != nil {
 		return 0, err
@@ -225,14 +236,41 @@ func RenameGroup(db *sql.DB, oldName, newName string) (int64, error) {
 	return n, nil
 }
 
-// DeleteGroup 把所有 group_name=name 的客户端的 group_name 置空（移回「未分组」），返回受影响行数。
+// DeleteGroup 删除分组：先把 groups 表中的注册项删掉，再把 agents.group_name 置空，返回受影响行数（agent 数）。
 func DeleteGroup(db *sql.DB, name string) (int64, error) {
+	if _, err := db.Exec(`DELETE FROM groups WHERE name=?`, name); err != nil {
+		return 0, err
+	}
 	res, err := db.Exec(`UPDATE agents SET group_name='' WHERE group_name=?`, name)
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// AddGroup 注册一个新分组（用于「+ 新建分组」按钮）。已存在则忽略。
+func AddGroup(db *sql.DB, name string) error {
+	_, err := db.Exec(`INSERT OR IGNORE INTO groups (name, created_at) VALUES (?, ?)`, name, time.Now().Unix())
+	return err
+}
+
+// ListGroups 返回所有已注册分组名（按名称排序）。
+func ListGroups(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT name FROM groups ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // GetTrafficHistory 返回某机器各自然月流量历史

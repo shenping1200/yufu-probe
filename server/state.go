@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"sort"
 	"sync"
 	"time"
 )
@@ -15,6 +16,9 @@ type ServerState struct {
 	agents  map[string]*AgentRow
 	dirty   map[string]bool
 	traffic map[string]trafficDelta
+	// groups 是「分组名注册表」，记录所有已存在的自定义分组名（含 0 成员的空组），
+	// 用于标签条渲染与编辑下拉。key=分组名，value=创建时间（Unix 秒）。
+	groups map[string]int64
 }
 
 type trafficDelta struct {
@@ -30,6 +34,7 @@ func NewServerState() *ServerState {
 		agents:  make(map[string]*AgentRow),
 		dirty:   make(map[string]bool),
 		traffic: make(map[string]trafficDelta),
+		groups:  make(map[string]int64),
 	}
 }
 
@@ -39,10 +44,28 @@ func (s *ServerState) LoadFromDB(db *sql.DB, month string) {
 	if err != nil {
 		return
 	}
+	// 先把 agents 全部载入；同时把出现过的 group_name 暂存，结束后再与「groups 表」取并集
+	// 避免依赖 LOAD ORDER：注册表里有但没人用 → 仍需保留
+	seenGroups := make(map[string]struct{})
 	s.mu.Lock()
 	for i := range rows {
 		a := rows[i]
 		s.agents[a.UUID] = &a
+		if a.Group != "" {
+			seenGroups[a.Group] = struct{}{}
+		}
+	}
+	// 加载注册表
+	gs, err := ListGroups(db)
+	if err == nil {
+		for _, n := range gs {
+			s.groups[n] = time.Now().Unix()
+			delete(seenGroups, n)
+		}
+	}
+	// 把 agents 出现但注册表里没有的（脏数据/历史遗留）补回去
+	for n := range seenGroups {
+		s.groups[n] = time.Now().Unix()
 	}
 	s.mu.Unlock()
 }
@@ -135,7 +158,7 @@ func (s *ServerState) Remove(uuid string) {
 	s.mu.Unlock()
 }
 
-// RenameGroup 重命名分组：内存态中所有 Group==oldName 的客户端改为 newName，返回受影响数。
+// RenameGroup 重命名分组：内存态中所有 Group==oldName 的客户端改为 newName，注册表也同步重命名，返回受影响 agent 数。
 func (s *ServerState) RenameGroup(oldName, newName string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,10 +170,14 @@ func (s *ServerState) RenameGroup(oldName, newName string) int {
 			n++
 		}
 	}
+	if _, ok := s.groups[oldName]; ok {
+		s.groups[newName] = s.groups[oldName]
+		delete(s.groups, oldName)
+	}
 	return n
 }
 
-// DeleteGroup 删除分组：内存态中所有 Group==name 的客户端置空（移回「未分组」），返回受影响数。
+// DeleteGroup 删除分组：内存态中所有 Group==name 的客户端置空（移回「未分组」），注册表也删除，返回受影响 agent 数。
 func (s *ServerState) DeleteGroup(name string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,7 +189,36 @@ func (s *ServerState) DeleteGroup(name string) int {
 			n++
 		}
 	}
+	delete(s.groups, name)
 	return n
+}
+
+// AddGroup 注册一个新分组到内存（如果已存在则不覆盖原 created_at）。
+func (s *ServerState) AddGroup(name string) {
+	s.mu.Lock()
+	if _, ok := s.groups[name]; !ok {
+		s.groups[name] = time.Now().Unix()
+	}
+	s.mu.Unlock()
+}
+
+// RemoveGroup 从内存中删除一个分组（不影响 agents；agents 的 group_name 由调用方决定是否清空）。
+func (s *ServerState) RemoveGroup(name string) {
+	s.mu.Lock()
+	delete(s.groups, name)
+	s.mu.Unlock()
+}
+
+// Groups 返回当前所有已注册分组名（按字典序），用于广播 / REST 列表。
+func (s *ServerState) Groups() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.groups))
+	for n := range s.groups {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Snapshot 返回当前全部机器的副本（用于广播 / REST）

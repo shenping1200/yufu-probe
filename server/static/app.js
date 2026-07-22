@@ -2,6 +2,8 @@
 
 const state = {
   agents: [],
+  // 已注册的自定义分组名（含 0 成员空组）。由 WS 广播或 /api/groups 填充。
+  groups: [],
   history: {},
   ws: null,
   loggedIn: false,
@@ -106,6 +108,7 @@ function connectWS() {
     const msg = JSON.parse(e.data);
     if (msg.type === 'agents') {
       state.agents = msg.data;
+      if (Array.isArray(msg.groups)) state.groups = msg.groups;
       updateHistory(msg.data);
       requestRender();
     }
@@ -186,6 +189,7 @@ function fmtConfig(a) {
 // ---------- 渲染 ----------
 function render() {
   renderGroupTabs();
+  buildGroupOptions();
   renderSummary();
   if (state.viewMode === 'list') {
     renderList();
@@ -236,30 +240,36 @@ function filteredAgents() {
   return state.agents.filter(a => a.online && a.group === g);
 }
 
-// 渲染顶部筛选标签条：全部(总数) / 各自定义组(数量) / ⚠ 离线(数量)
+// 渲染顶部筛选标签条：全部(总数) / 已注册自定义组(数量) / 未分组 / ⚠ 离线(数量) / + 新建分组
 function renderGroupTabs() {
   const el = document.getElementById('groupTabs');
   const total = state.agents.length;
   const offlineCount = state.agents.filter(a => !a.online).length;
+  const ungroupedCount = state.agents.filter(a => a.online && !a.group).length;
 
-  // 在线分组计数
+  // 每个自定义组的"在线成员"计数
   const groupCounts = {};
   for (const a of state.agents) {
-    if (a.online) {
-      const g = a.group || '未分组';
-      groupCounts[g] = (groupCounts[g] || 0) + 1;
+    if (a.online && a.group) {
+      groupCounts[a.group] = (groupCounts[a.group] || 0) + 1;
     }
   }
-  // 按名称排序；若当前选中的自定义组已无成员（例如刚被改名/移走），仍保留标签以免丢失高亮
-  const groupNames = Object.keys(groupCounts).sort((x, y) => x.localeCompare(y, 'zh'));
-  if (state.currentGroup && state.currentGroup !== OFFLINE_GROUP && !groupCounts[state.currentGroup]) {
+
+  // 自定义组列表：以「注册表 state.groups」为权威，再把 agents 出现但未注册的补回来（容错）
+  const set = new Set(state.groups);
+  for (const a of state.agents) {
+    if (a.group) set.add(a.group);
+  }
+  const groupNames = [...set].sort((x, y) => x.localeCompare(y, 'zh'));
+  // 若当前选中的自定义组被改名/删除导致不再存在，临时保留以维持高亮
+  if (state.currentGroup && state.currentGroup !== OFFLINE_GROUP && state.currentGroup !== '未分组' && !set.has(state.currentGroup)) {
     groupNames.push(state.currentGroup);
   }
 
   // 单个标签：managed=true 时附加重命名/删除操作（悬停显示），「未分组」与「⚠ 离线」不可管理
   const tabHTML = (name, count, opts) => {
     const active = state.currentGroup === name;
-    const cls = ['group-tab', active ? 'active' : '', opts && opts.offline ? 'offline' : ''].join(' ').trim();
+    const cls = ['group-tab', active ? 'active' : '', opts && opts.offline ? 'offline' : '', opts && opts.muted ? 'muted' : ''].join(' ').trim();
     const btn = `<button class="${cls}" data-group="${escapeHtml(name)}">${escapeHtml(name)} <span class="gt-count">${count}</span></button>`;
     if (opts && opts.managed) {
       const acts = `<span class="gt-acts">
@@ -273,12 +283,16 @@ function renderGroupTabs() {
 
   let html = tabHTML('', total, {});
   for (const name of groupNames) {
-    html += tabHTML(name, groupCounts[name], { managed: name !== '未分组' });
+    html += tabHTML(name, groupCounts[name] || 0, { managed: true });
   }
+  html += tabHTML('未分组', ungroupedCount, { muted: true });
   html += tabHTML(OFFLINE_GROUP, offlineCount, { offline: true });
+  // 始终排在最后的新建分组按钮
+  html += `<button class="group-tab new-group" id="newGroupBtn" title="新建分组">+ 新建分组</button>`;
 
   el.innerHTML = html;
   el.querySelectorAll('.group-tab').forEach(btn => {
+    if (btn.id === 'newGroupBtn') return;
     btn.onclick = () => {
       state.currentGroup = btn.dataset.group;
       requestRender();
@@ -291,6 +305,8 @@ function renderGroupTabs() {
       else groupDelete(g);
     };
   });
+  const newBtn = document.getElementById('newGroupBtn');
+  if (newBtn) newBtn.onclick = groupCreate;
 }
 
 // 重命名分组：改名会作用于该分组下的全部客户端
@@ -325,6 +341,36 @@ async function groupDelete(name) {
   } catch (e) {
     alert('删除失败：' + e.message);
   }
+}
+
+// 新建分组：弹窗输入名称 → 注册到分组表（不需要任何客户端属于此分组）
+async function groupCreate() {
+  const input = prompt('新建分组\n请输入分组名（先建一个空组，再用「编辑机器」把客户端加进来）：');
+  if (input === null) return;
+  const name = input.trim();
+  if (name === '') return;
+  if (name === '未分组') { alert('「未分组」是默认分组，不能用作自定义分组名'); return; }
+  if (name === OFFLINE_GROUP) { alert('该名称保留给离线分组，不可使用'); return; }
+  if (/[\\/]/.test(name)) { alert('分组名不能包含 / 或 \\'); return; }
+  if (state.groups.includes(name)) { alert('该分组已存在'); return; }
+  try {
+    const r = await fetch('/api/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) { alert('新建失败：HTTP ' + r.status); return; }
+    await refreshAgents();
+  } catch (e) {
+    alert('新建失败：' + e.message);
+  }
+}
+
+// 把分组下拉框（<datalist>）的选项同步成当前 state.groups
+function buildGroupOptions() {
+  const dl = document.getElementById('group-options');
+  if (!dl) return;
+  dl.innerHTML = state.groups.map(g => `<option value="${escapeHtml(g)}"></option>`).join('');
 }
 
 // 立即从 REST 拉取最新全量列表（分组改名/删除后保证界面即时刷新，不依赖 WS 推送时序）
