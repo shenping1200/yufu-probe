@@ -89,7 +89,9 @@ bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/
 - 交互式引导：端口、管理员用户名/密码、Agent Token、绑定域名
 - 生成 `configs/server.yaml` 与 `docker-compose.yml`
 - 若填写域名，自动配置 Caddy HTTP 反向代理
-- 拉取代码、构建镜像并启动服务
+- **拉取 GHCR 预编译镜像并启动服务**（CI 已编好 amd64/arm64，VPS 零编译，低配机器也能秒级拉起；拉取失败自动回退本地 `docker compose build`）
+
+> **关于预编译镜像**：服务端镜像由 GitHub Actions 在每次推送到 `main` 时自动构建并发布到 `ghcr.io/shenping1200/yufu-probe:latest`（公开，可匿名 `docker pull`）。这意味着安装机**不再需要现编译**——这正是 1C1G 等低配 VPS 把安装从 ~10 分钟降到 ~1-2 分钟的关键。配置 `server.yaml` 通过运行时挂载注入，覆盖镜像内置默认配置。
 
 也可以先 clone 仓库再执行：
 
@@ -172,11 +174,11 @@ systemctl stop yufu-agent && systemctl disable yufu-agent && \
 
 ## Docker 手动部署（推荐，仅 Linux）
 
-项目已提供 `Dockerfile.server`、`Dockerfile.agent` 与 `docker-compose.yml`，默认冷门端口 `39689`，一条命令启动：
+项目已提供 `Dockerfile.server`、`Dockerfile.agent` 与 `docker-compose.yml`，默认冷门端口 `39689`。服务端**默认使用 GHCR 预编译镜像**（无需本地编译），一条命令启动：
 
 ```bash
 cd yufu-probe
-docker compose up -d --build
+docker compose up -d
 ```
 
 - 服务端映射 `39689`，浏览器访问 `http://<服务器IP>:39689`
@@ -185,14 +187,16 @@ docker compose up -d --build
 
 自定义：修改 `docker-compose.yml` 里的 `TOKEN`（需与 `server.yaml` 的 `agent_token` 一致）、`INTERVAL`，或挂载修改后的 `configs/server.yaml`，再 `docker compose up -d`。
 
-单独构建镜像：
+如需自己构建镜像（例如离线环境、或 CI 不可用时的回退）：
 
 ```bash
+docker compose up -d --build
+# 等价于单独构建：
 docker build -f Dockerfile.server -t yufu-probe-server .
 docker build -f Dockerfile.agent -t yufu-probe-agent .
 ```
 
-> 说明：客户端默认只编译 Linux 镜像（`GOOS=linux`），符合「两端均部署在 Linux」的诉求。
+> 说明：客户端默认只编译 Linux 镜像（`GOOS=linux`），符合「两端均部署在 Linux」的诉求。服务端镜像由 CI 自动发布到 `ghcr.io/shenping1200/yufu-probe:latest`，本地 `--build` 仅作为拉取失败时的兜底。
 
 ## 配置说明
 

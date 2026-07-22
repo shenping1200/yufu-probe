@@ -120,16 +120,17 @@ admin:
 db_path: data/probe.db
 EOF
 
+  # 使用 GHCR 预编译镜像（CI 已编好 amd64/arm64），VPS 零编译、安装更快更稳。
+  # 配置 server.yaml 改为运行时挂载，覆盖镜像内置的默认配置。
   cat > docker-compose.yml <<EOF
 services:
   server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
+    image: ghcr.io/shenping1200/yufu-probe:latest
     container_name: probe-server
     ports:
       - "${PORT}:${PORT}"
     volumes:
+      - ./configs/server.yaml:/app/configs/server.yaml:ro
       - probe-data:/app/data
     restart: unless-stopped
 EOF
@@ -178,10 +179,17 @@ EOF
 
 # ---------- 启动服务 ----------
 start_services() {
-  info "构建并启动服务..."
+  info "拉取预编译镜像并启动服务..."
   $COMPOSE down 2>/dev/null || true
-  $COMPOSE up -d --build
-  ok "服务已启动"
+  # 优先使用 GHCR 预编译镜像（零编译，1C1G 等低配机器秒级拉起）
+  if $COMPOSE pull server 2>/dev/null; then
+    $COMPOSE up -d
+    ok "服务已启动（使用预编译镜像，无需本地编译）"
+  else
+    warn "预编译镜像拉取失败，回退到本地编译（较慢，可能受机器内存限制）..."
+    $COMPOSE up -d --build
+    ok "服务已启动（本地编译）"
+  fi
 }
 
 # ---------- 本机原生自监控 ----------
