@@ -102,7 +102,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/
 
 ## 卸载
 
-**服务端（Docker，默认安装目录 `/opt/yufu-probe`）**
+### 服务端（Docker，默认安装目录 `/opt/yufu-probe`）
 
 ```bash
 cd /opt/yufu-probe
@@ -113,16 +113,43 @@ rm -rf /opt/yufu-probe
 systemctl disable yufu-agent 2>/dev/null; rm -f /etc/systemd/system/yufu-agent.service /usr/local/bin/yufu-agent /etc/yufu-agent.conf; rm -rf /var/lib/yufu-agent; systemctl daemon-reload
 ```
 
-**客户端 —— 推荐：一条命令卸载（原生 / Docker 均兼容）**
+### 客户端 —— 推荐：一条命令卸载（原生 / 旧版 Docker 均兼容）
+
+在**要卸载的那台客户端机器**上执行：
 
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/uninstall-agent.sh) \
   ws://<服务端IP>:39689 <AgentToken>
 ```
 
-该脚本会：① 调用 `DELETE /api/agents/:uuid` **通知服务端立即删除本机记录**（面板随即消失）；② 停止并清理本机 agent 进程与文件（原生 systemd 或旧版 Docker 容器 `probe-agent` 均兼容）。这正是「在客户端执行一次删除命令，服务端就看不到它」的体验。
+#### 服务端地址写法（以下四种都支持，脚本自动归一化）
 
-如需手动清理原生 agent：
+| 写法 | 适用场景 |
+|------|----------|
+| `ws://1.2.3.4:39689` | 内网、未启用 TLS（最常用） |
+| `wss://域名:39689` | 公网、已启用 HTTPS/WSS |
+| `http://1.2.3.4:39689` | 也可以直接写 http（脚本会自动处理） |
+| `1.2.3.4:39689` | 裸地址（自动按 http 处理） |
+
+> 第二个参数为服务端安装时设置的 **Agent Token**（面板「安装完成」页可见）。注意：**不要**画蛇添足写成 `http://ws://...` 这类嵌套形式，脚本已能正确识别上述每种写法。
+
+#### 这条命令到底做了什么
+
+1. **服务端移除（核心）**
+   - 读取本机 UUID：原生 agent 在 `/var/lib/yufu-agent/uuid`，旧版 Docker agent 在容器内 `/data/uuid`。
+   - 调用 `DELETE /api/agents/:uuid`（Agent Token 鉴权）→ 服务端**立即删除**该机器记录，刷新面板随即消失。
+   - **兜底机制**：即便该接口因网络不通或服务端版本较旧而失败，`systemctl stop yufu-agent`（原生）或 `docker stop`（旧版容器）会触发 agent 的**优雅注销**——进程收到 SIGTERM 后主动发送 WebSocket 注销请求，服务端同样会删除记录。两种路径保证「服务端看不到这台机器」。
+2. **本机清理（文件 / 服务 / 容器全部清干净，不留残留）**
+   - 原生 agent：停止并禁用 `yufu-agent.service`，删除二进制 `/usr/local/bin/yufu-agent`、配置 `/etc/yufu-agent.conf`、UUID 目录 `/var/lib/yufu-agent`，最后 `systemctl daemon-reload`。
+   - 旧版 Docker agent：按容器名（`yufu-agent` 与 `probe-agent` **两种命名都识别**）并辅以「进程含 `/app/probe-agent`」兜底，强制删除容器，避免容器带重启策略反复复活。
+
+这正是「**在客户端执行一次删除命令，服务端就看不到它**」的体验：本地清理与服务端记录删除一步到位。
+
+> 修复记录：旧版 `uninstall-agent.sh` 存在两个已知问题，现已修复——
+> 1. 旧版只识别名为 `probe-agent` 的 Docker 容器，漏掉了实际命名为 `yufu-agent` 的容器，导致旧客户端卸载不干净、面板反复出现；
+> 2. 旧版对 `http://` 前缀的输入会错误拼成 `http://http://...`，使 `DELETE` 请求静默失败。新版已对地址做正确归一化。
+
+#### 手动清理（仅原生 agent）
 
 ```bash
 systemctl stop yufu-agent && systemctl disable yufu-agent && \
