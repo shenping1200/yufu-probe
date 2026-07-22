@@ -4,9 +4,9 @@
 #   方式1：cd /opt/yufu-probe && bash upgrade.sh
 #   方式2：bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/upgrade.sh)
 # 作用：
-#   1) 拉取最新代码（install.sh / docker-compose.yml 等）
-#   2) 拉取最新 GHCR 预编译镜像
-#   3) 重启容器
+#   1) 拉取最新 GHCR 预编译镜像（前端已通过 Go embed 打进镜像，
+#      拉新镜像 = 拿到新 UI；不需要也不应该 git pull，避免覆盖本地生成的 compose/config）
+#   2) 重启容器
 # 已注册的客户端与 SQLite 数据库均保留（只重启容器，卷与挂载不动）。
 
 set -e
@@ -47,19 +47,13 @@ fi
 ok "安装目录: $INSTALL_DIR"
 ok "compose  : $COMPOSE"
 
-# ---------- 1. 拉取最新代码 ----------
-info "拉取最新代码..."
-if [ -d .git ]; then
-  if git pull --rebase --autostash 2>/dev/null; then
-    ok "代码已更新到最新"
-  else
-    warn "git pull 失败（可能是网络问题或本地有冲突），将跳过代码更新、仅升级容器镜像"
-  fi
-else
-  warn "不是 git 仓库，跳过代码更新（仅升级容器镜像）"
-fi
+# 注意：不执行 git pull。
+# 原因：docker-compose.yml 与 configs/server.yaml 是 install.sh 在本机生成的，
+#      与仓库里跟踪的模板会冲突，git pull --rebase --autostash 可能把这些文件覆盖掉，
+#      导致端口/挂载全错、服务起不来。新 UI 已通过 embed 打进镜像，
+#      拉新镜像即可拿到，无需动本机文件。
 
-# ---------- 2. 拉取最新预编译镜像 ----------
+# ---------- 1. 拉取最新预编译镜像 ----------
 info "拉取最新 GHCR 预编译镜像..."
 if $COMPOSE pull server; then
   ok "镜像已拉取"
@@ -67,7 +61,7 @@ else
   err "拉取镜像失败，请检查网络或 GHCR 可达性（也可以临时用 install.sh 重装）"
 fi
 
-# ---------- 3. 重启服务 ----------
+# ---------- 2. 重启服务 ----------
 info "重启服务..."
 $COMPOSE up -d
 ok "升级完成"

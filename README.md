@@ -113,7 +113,7 @@ cd /opt/yufu-probe && bash upgrade.sh
 bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/upgrade.sh)
 ```
 
-升级脚本流程：`git pull` 取最新 → `docker compose pull server` 拉新镜像 → `docker compose up -d` 重启。`probe-data` 数据卷与挂载的 `configs/server.yaml` 保持不变。
+升级脚本流程：`docker compose pull server` 拉新镜像 → `docker compose up -d` 重启。**不执行 `git pull`**——前端已通过 `embed` 打进镜像,拉新镜像即拿到新 UI;`git pull` 会与本机由 `install.sh` 生成的 `docker-compose.yml` / `configs/server.yaml` 冲突,反而会把配置覆盖坏。`probe-data` 数据卷与挂载的 `configs/server.yaml` 保持不变。
 
 ## 客户端一键安装（推荐，秒级）
 
