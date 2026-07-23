@@ -10,6 +10,8 @@ const state = {
   currentUUID: null,
   theme: localStorage.getItem('probe-theme') || 'dark',
   viewMode: localStorage.getItem('probe-view') || 'card',
+  // IP 模糊显示开关（仅本浏览器，localStorage 持久化）
+  maskIP: localStorage.getItem('yufu_mask_ip') === '1',
   // 当前选中的分组筛选（'' = 全部，'⚠ 离线' = 离线，否则为自定义组名）
   currentGroup: '',
 };
@@ -251,19 +253,27 @@ function flagImage(code, title) {
 function isPrivateIP(ip) {
   return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(ip) || ip === '127.0.0.1' || ip === '::1';
 }
+// 模糊 IP（仅 IPv4）：保留第 1、4 段，中间两段打星，如 1.2.3.4 -> 1.*.*.4；IPv6/非标准原样返回
+function maskIP(ip) {
+  if (typeof ip !== 'string') return ip;
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return ip;
+  return m[1] + '.*.*.' + m[4];
+}
 // ipBlockHTML 双栈公网 IP 展示：v4 在上、v6 在下，有哪个显示哪个；
 // 纯 v6 / 纯 v4 只显示一行；无公网 IP 时回退本机 IP 并标注"内网"。
 function ipBlockHTML(a) {
+  const fmt = ip => escapeHtml(state.maskIP ? maskIP(ip) : ip);
   const v4 = a.public_ip4 || '';
   const v6 = a.public_ip6 || '';
   if (v4 || v6) {
     return [v4, v6].filter(Boolean)
-      .map(ip => `<span class="ip-line">${escapeHtml(ip)}</span>`)
+      .map(ip => `<span class="ip-line">${fmt(ip)}</span>`)
       .join('');
   }
   const lan = a.public_ip || a.ip;
   const note = a.public_ip ? '' : ' <span class="ip-note">(内网)</span>';
-  return `<span class="ip-line">${escapeHtml(lan)}${note}</span>`;
+  return `<span class="ip-line">${fmt(lan)}${note}</span>`;
 }
 function percent(used, total) {
   if (!total) return 0;
@@ -379,6 +389,8 @@ function renderGroupTabs() {
   html += tabHTML(OFFLINE_GROUP, offlineCount, { offline: true });
   // 始终排在最后的新建分组按钮
   html += `<button class="group-tab new-group" id="newGroupBtn" title="新建分组">+ 新建分组</button>`;
+  // IP 模糊显示切换键（仅本浏览器生效，刷新不丢）
+  html += `<button class="group-tab" id="maskIpBtn" title="切换 IP 模糊显示（保留首尾两段）">${state.maskIP ? '🙈 IP已遮' : '👁 IP显示'}</button>`;
 
   el.innerHTML = html;
   el.querySelectorAll('.group-tab').forEach(btn => {
@@ -397,6 +409,13 @@ function renderGroupTabs() {
   });
   const newBtn = document.getElementById('newGroupBtn');
   if (newBtn) newBtn.onclick = groupCreate;
+  const maskBtn = document.getElementById('maskIpBtn');
+  if (maskBtn) maskBtn.onclick = () => {
+    state.maskIP = !state.maskIP;
+    localStorage.setItem('yufu_mask_ip', state.maskIP ? '1' : '0');
+    renderGroupTabs();
+    render();
+  };
 }
 
 // 重命名分组：改名会作用于该分组下的全部客户端
