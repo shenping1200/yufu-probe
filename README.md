@@ -12,6 +12,9 @@
 - **可选 TLS**：跨公网部署时启用 `wss` / `https`
 - **一键安装命令按钮**：顶部「📋 生成安装命令」一键生成并复制到剪贴板（自动用当前访问地址 + Token 拼装），到新 VPS 粘贴即可
 - **VPS 到期时间 & 倒计时**：编辑框可设置每台机器的到期时间；卡片右上与列表「运行时间」下方显示剩余天数，**≤ 7 天橙色警告、已到期红色脉冲提醒**
+- **Web SSH 终端**：在浏览器内直接打开任意客户端的终端（基于 WebSocket + PTY），无需额外 SSH 客户端、不暴露 22 端口；连接时需输入 Web SSH 密码（可单独设置，留空则复用管理员密码）
+- **Web SSH 防爆破**：连接密码连续输错 5 次，自动锁定该客户端 24 小时，期间无法再连
+- **一键解封 / 改密**：服务端管理菜单内置「解封」与「修改 SSH 密码」，无需手动改配置或进容器
 
 ## 目录结构
 
@@ -24,6 +27,7 @@ probe/
 │   ├── hub.go         # WebSocket 广播
 │   ├── auth.go        # 登录 session
 │   ├── api.go         # REST API 与 WS 处理
+│   ├── terminal.go   # Web SSH 终端桥接（密码校验 / PTY / 锁定）
 │   └── main.go        # 入口
 ├── agent/             # 客户端
 │   ├── collector.go   # 系统指标采集（gopsutil）
@@ -81,6 +85,8 @@ bash <(curl -sSL https://raw.githubusercontent.com/shenping1200/yufu-probe/main/
   - `1) 卸载服务端`：停止并移除服务端容器与数据卷，删除安装目录，并清理本机自监控 agent（文件/服务残留全清）；
   - `2) 卸载客户端`：自动读取本机 `/etc/yufu-agent.conf` 中的服务端地址与 Token（**无需手动输入**），调用 `uninstall-agent.sh` 清理本机 agent 并通知服务端删除记录；若该配置文件不存在才退化为手动输入；
   - `3) 卸载全部`：服务端 + 本机客户端一并卸载（客户端同样自动识别配置）。
+- **3) 解封**：一键解除所有被 Web SSH 锁定的客户端（密码连续输错 5 次触发的 24 小时锁定）；如需仅解封某台，可带 UUID 执行 `docker compose exec server probe-server unlock <uuid>`。
+- **4) 修改 SSH 密码**：交互输入新的 Web SSH 连接密码（直接回车则复用管理员密码），自动备份 `server.yaml`、写回新密码并重启服务端生效。
 
 > 非交互环境（如 `curl ... | bash` 流水线）会跳过菜单、直接执行安装，保持旧用法兼容。
 
@@ -100,6 +106,35 @@ git clone https://github.com/shenping1200/yufu-probe.git
 cd yufu-probe
 bash install.sh
 ```
+
+## Web SSH 终端
+
+在服务端安装并注册客户端后，可在面板直接打开任意客户端的 **Web SSH 终端**（浏览器内 PTY，基于 WebSocket 桥接，无需额外 SSH 客户端、不暴露 22 端口）。
+
+**连接密码（连接时一次静态口令确认）**
+
+- 密码由服务端统一配置在 `server.yaml` 的 `ssh_password` 字段；安装时已可设置（位于「监听端口」之后），也可随时通过管理菜单 **4) 修改 SSH 密码** 更改。
+- 留空则复用管理员密码；建议为 Web SSH 单独设置一个，与管理员密码解耦。
+- 打开某台客户端的 Web SSH 时会弹出密码框，输入正确后方可进入终端。
+
+**防爆破锁定**
+
+- 同一客户端的 Web SSH 密码连续输错 **5 次**，服务端会将该客户端锁定 **24 小时**，期间无法再连接其 Web SSH。
+- 锁定状态落盘（SQLite `ssh_lock` 表），服务端重启后依然生效。
+
+**解封**
+
+- 管理菜单选择 **3) 解封** 可一键解除所有锁定；
+- 或手动在已安装服务端的 VPS 上执行（需先 `cd /opt/yufu-probe`）：
+
+```bash
+docker compose exec server probe-server unlock            # 解封全部
+docker compose exec server probe-server unlock <uuid>    # 仅解封某台
+```
+
+**修改密码**
+
+- 管理菜单选择 **4) 修改 SSH 密码**，按提示输入新密码（直接回车 = 复用管理员密码），脚本自动备份 `server.yaml`、写回新密码并重启服务端生效。
 
 ## 本地升级（已安装的服务端）
 
@@ -221,8 +256,9 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 | `listen` / `port` | 监听地址与端口 |
 | `tls.enabled` / `cert` / `key` | 启用 HTTPS/WSS 与证书路径 |
 | `agent_token` | 客户端接入令牌，需与 agent 一致 |
+| `ssh_password` | Web SSH 连接密码；留空则复用 `admin.password`，建议单独设置 |
 | `admin.username` / `admin.password` | Web 登录账号 |
-| `db_path` | SQLite 数据库文件路径 |
+| `db_path` | SQLite 数据库文件路径（含 `ssh_lock` 锁定表） |
 
 `configs/agent.yaml`：`server`（ws/wss 地址）、`token`、`interval`（秒）、`iface`（监控网卡，留空自动选）、`uuid_file`（UUID 持久化路径）。
 
@@ -240,6 +276,8 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 | DELETE | `/api/agents/:uuid` | 删除机器（Agent Token 鉴权，用于主动注销） |
 | GET | `/api/agents/:uuid/traffic` | 各自然月流量历史 |
 | WS | `/ws/agent?token=` | 客户端上报通道 |
+| WS | `/ws/terminal/{uuid}` | 浏览器 Web SSH 终端桥接（需登录 + Web SSH 密码） |
+| POST | `/api/ssh/unlock` | 解除 Web SSH 锁定（需登录，运维） |
 | WS | `/ws/viewer` | 浏览器实时订阅（需登录） |
 
 ## 流量累计逻辑
