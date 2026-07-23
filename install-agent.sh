@@ -111,8 +111,12 @@ EOF
     err "服务启动失败，请查看：journalctl -u yufu-agent -n 50"
   fi
 else
-  # 无 systemd（如部分容器）：用 nohup 兜底
+  # 无 systemd（如部分容器/OpenVZ）：用 nohup 兜底
+  # 必须把配置文件作为环境变量导出，否则 agent 读不到 server/token 会直接退出（server address required）
   info "未检测到 systemd，使用 nohup 后台运行"
+  set -a
+  . "$CONF"
+  set +a
   pkill -f /usr/local/bin/yufu-agent 2>/dev/null || true
   nohup /usr/local/bin/yufu-agent >/var/log/yufu-agent.log 2>&1 &
   ok "已在后台启动（日志：/var/log/yufu-agent.log）"
