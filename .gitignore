@@ -4,6 +4,7 @@ dist/*
 !dist/yufu-agent-linux-arm64
 *.exe
 probe-server
+/server/server
 probe-agent
 agent-*
 yufu-agent-darwin-*
