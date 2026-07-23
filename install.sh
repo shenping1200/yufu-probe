@@ -377,6 +377,25 @@ do_uninstall() {
   esac
 }
 
+# ---------- 解封：一键解除所有 Web SSH 锁定 ----------
+do_unlock() {
+  info "准备一键解除所有 Web SSH 锁定..."
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    err "未找到安装目录 $INSTALL_DIR（若自定义过目录，请 INSTALL_DIR=/your/path bash $0）"
+  fi
+  cd "$INSTALL_DIR" || err "无法进入安装目录 $INSTALL_DIR"
+
+  # 确认 probe-server 容器在运行
+  if ! $COMPOSE ps -q server 2>/dev/null | grep -q .; then
+    err "未检测到运行中的 probe-server 容器，无法解封（请先启动/安装服务端）"
+  fi
+
+  info "执行：docker compose exec server probe-server unlock（解全部）"
+  $COMPOSE exec -T server probe-server unlock
+  ok "已解除全部 Web SSH 锁定"
+  echo "（如需仅解封某台客户端：docker compose exec server probe-server unlock <uuid>）"
+}
+
 # ---------- 安装（保持原有逻辑不变）----------
 do_install() {
   check_env
@@ -394,11 +413,13 @@ if [[ -t 0 ]]; then
   echo "========== 渔夫探针 (YuFu Probe) =========="
   echo "1) 安装"
   echo "2) 卸载"
+  echo "3) 解封（Web SSH 锁定一键解除）"
   echo "=========================================="
-  read -rp "请选择 [1/2]: " top || true
+  read -rp "请选择 [1/2/3]: " top || true
   case "$top" in
     1) do_install ;;
     2) do_uninstall ;;
+    3) do_unlock ;;
     *) err "无效选择: $top" ;;
   esac
 else
