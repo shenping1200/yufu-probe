@@ -72,7 +72,7 @@ func (s *ServerState) LoadFromDB(db *sql.DB, month string) {
 }
 
 // ApplyReport 处理一条上报：原地更新内存、累加流量、标记脏数据，全程不碰 DB、不广播
-func (s *ServerState) ApplyReport(rep AgentReport, country string) {
+func (s *ServerState) ApplyReport(rep AgentReport, country, countryCode string) {
 	now := time.Now().Unix()
 	s.mu.Lock()
 	cur, ok := s.agents[rep.UUID]
@@ -115,6 +115,9 @@ func (s *ServerState) ApplyReport(rep AgentReport, country string) {
 	if country != "" {
 		cur.Country = country
 	}
+	if countryCode != "" {
+		cur.CountryCode = countryCode
+	}
 	if rep.RxDelta > 0 {
 		cur.RxMonth += rep.RxDelta
 		d := s.traffic[rep.UUID]
@@ -129,6 +132,24 @@ func (s *ServerState) ApplyReport(rep AgentReport, country string) {
 	}
 	s.agents[rep.UUID] = cur
 	s.dirty[rep.UUID] = true
+	s.mu.Unlock()
+}
+
+// SetCountry 由异步地理查询回调：查成功后立即回写内存态 country/country_code，
+// 避免运行中这两个字段永远停留在 server 启动 loadFromDB 时的旧值。
+//（lookupCountry 同步路径走 ApplyReport 的 country/code 参数；本方法专供
+// cache miss 异步 goroutine 写内存 + dirty，由 SaveAgent 后续落库。）
+func (s *ServerState) SetCountry(uuid, country, code string) {
+	s.mu.Lock()
+	if cur, ok := s.agents[uuid]; ok {
+		if country != "" {
+			cur.Country = country
+		}
+		if code != "" {
+			cur.CountryCode = code
+		}
+		s.dirty[uuid] = true
+	}
 	s.mu.Unlock()
 }
 

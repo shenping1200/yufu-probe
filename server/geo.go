@@ -47,15 +47,15 @@ func isPrivateIP(ip string) bool {
 // lookupCountry 返回 IP 对应的国家展示串（如 "🇸🇬 Singapore"）。
 // 同步读内存缓存；公网 IP 未命中时异步拉取并回写 DB（同时写入 country_code），不阻塞上报通道。
 // uuid 用于精确定位回写行（避免按公网 IP 更新时与表内网 IP 不匹配）。
-func lookupCountry(db *sql.DB, ip, uuid string) string {
+func lookupCountry(db *sql.DB, ip, uuid string) (display, code string) {
 	if ip == "" || isPrivateIP(ip) {
-		return ""
+		return "", ""
 	}
 	geoMu.Lock()
 	info, ok := geoCache[ip]
 	geoMu.Unlock()
 	if ok {
-		return info.Display
+		return info.Display, info.Code
 	}
 	go func() {
 		info := fetchCountry(ip)
@@ -66,8 +66,10 @@ func lookupCountry(db *sql.DB, ip, uuid string) string {
 		geoCache[ip] = *info
 		geoMu.Unlock()
 		db.Exec(`UPDATE agents SET country=?, country_code=? WHERE uuid=?`, info.Display, info.Code, uuid)
+		// 查成功后立即回写内存态，避免运行中 country/country_code 停留在 server 启动时的旧值
+		live.SetCountry(uuid, info.Display, info.Code)
 	}()
-	return ""
+	return "", ""
 }
 
 // fetchCountry 调用 ipwho.is 获取国家名、国家代码与旗帜 emoji

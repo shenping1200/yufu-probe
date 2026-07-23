@@ -427,11 +427,11 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 		if geoIP == "" {
 			geoIP = rep.IP
 		}
-			country := ""
+			country, code := "", ""
 			if !isPrivateIP(geoIP) {
-				country = lookupCountry(db, geoIP, rep.UUID)
+				country, code = lookupCountry(db, geoIP, rep.UUID)
 			}
-			live.ApplyReport(rep, country)
+			live.ApplyReport(rep, country, code)
 		}
 	}
 }
