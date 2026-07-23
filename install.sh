@@ -8,6 +8,7 @@
 set -e
 
 REPO_URL="${REPO_URL:-https://github.com/shenping1200/yufu-probe.git}"
+REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/shenping1200/yufu-probe/main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/yufu-probe}"
 COMPOSE="docker compose"
 
@@ -110,6 +111,17 @@ generate_config() {
   info "生成服务端配置..."
 
   mkdir -p configs
+
+  # 把升级脚本也放进安装目录，方便日后「cd $INSTALL_DIR && bash upgrade.sh」原地升级
+  # （脚本自带从仓库 raw 下载的兜底，避免旧版/局部安装缺失该文件）
+  if [[ -f "upgrade.sh" ]]; then
+    cp -f "upgrade.sh" "$INSTALL_DIR/" && info "已放置升级脚本 → $INSTALL_DIR/upgrade.sh"
+  elif curl -fsSL "${REPO_RAW}/upgrade.sh" -o "$INSTALL_DIR/upgrade.sh" 2>/dev/null; then
+    info "已下载升级脚本 → $INSTALL_DIR/upgrade.sh"
+  else
+    warn "未能准备 upgrade.sh（日后升级可用 curl 直接拉取，不影响当前使用）"
+  fi
+
   cat > configs/server.yaml <<EOF
 listen: 0.0.0.0
 # 探针面板监听端口
