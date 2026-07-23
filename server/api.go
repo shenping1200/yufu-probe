@@ -406,19 +406,22 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if err != nil {
 				return
 			}
-			// 1) 控制消息：客户端主动注销（优雅停止时发送）
+			// 1) 控制消息：客户端主动注销（收到 SIGTERM 时发送）
+			// 注意：这里**不**删除数据库记录，只清理内存中的实时状态。
+			// 因为 agent 每次重启/升级时，旧进程都会发一次 unregister，如果这里硬删
+			// 会把用户手动设的备注/别名一起带走（即使新二进制立刻带着同 UUID 重连也来不及）。
+			// 真正需要删机器走 DELETE /api/agents/{uuid}（uninstall-agent.sh 用的接口）。
 			var ctrl struct {
 				Action string `json:"action"`
 				UUID   string `json:"uuid"`
 			}
 			if err := json.Unmarshal(data, &ctrl); err == nil && ctrl.Action == "unregister" {
 				if ctrl.UUID != "" {
-					DeleteAgent(db, ctrl.UUID)
 					live.Remove(ctrl.UUID)
 					hub.removeAgent(ctrl.UUID)
 					notifyAgentGone(ctrl.UUID)
 					broadcastAgents(hub)
-					log.Printf("[ws] agent %s 已注销", ctrl.UUID)
+					log.Printf("[ws] agent %s 主动断开（记录保留，由 DELETE 接口或离线超时处理）", ctrl.UUID)
 				}
 				return
 			}
