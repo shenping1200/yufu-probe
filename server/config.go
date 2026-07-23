@@ -8,12 +8,13 @@ import (
 
 // Config 服务端配置
 type Config struct {
-	Listen     string      `yaml:"listen"`
-	Port       int         `yaml:"port"`
-	TLS        TLSConfig   `yaml:"tls"`
-	AgentToken string      `yaml:"agent_token"`
-	Admin      AdminConfig `yaml:"admin"`
-	DBPath     string      `yaml:"db_path"`
+	Listen      string      `yaml:"listen"`
+	Port        int         `yaml:"port"`
+	TLS         TLSConfig   `yaml:"tls"`
+	AgentToken  string      `yaml:"agent_token"`
+	SSHPassword string      `yaml:"ssh_password"` // Web SSH 连接密码；为空时回退到管理员密码
+	Admin       AdminConfig `yaml:"admin"`
+	DBPath      string      `yaml:"db_path"`
 }
 
 type TLSConfig struct {

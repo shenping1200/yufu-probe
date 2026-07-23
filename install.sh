@@ -98,6 +98,10 @@ read_config() {
   read -rp "Agent 接入 Token [$DEFAULT_TOKEN]: " AGENT_TOKEN
   AGENT_TOKEN=${AGENT_TOKEN:-$DEFAULT_TOKEN}
 
+  # Web SSH 连接密码（方案 A：连接客户端时一次静态口令确认，服务端校验）。
+  # 留空则复用管理员密码；建议新装时单独设置一个，与管理员密码解耦。
+  read -rp "Web SSH 连接密码（留空则复用管理员密码）: " SSH_PASSWORD
+
   read -rp "绑定域名（留空则使用 IP:端口 访问）: " DOMAIN
 
   read -rp "安装目录 [$INSTALL_DIR]: " INPUT_DIR
@@ -132,6 +136,8 @@ tls:
   key: ""
 # 客户端接入令牌
 agent_token: "${AGENT_TOKEN}"
+# Web SSH 连接密码（留空则复用下方管理员密码）；连接客户端时做一次静态口令确认
+ssh_password: "${SSH_PASSWORD}"
 admin:
   username: ${ADMIN_USER}
   password: ${ADMIN_PASS}
@@ -250,6 +256,12 @@ print_summary() {
   echo "  管理员用户名: ${ADMIN_USER}"
   echo "  管理员密码: ${ADMIN_PASS}"
   echo "  Agent Token: ${AGENT_TOKEN}"
+  if [[ -n "$SSH_PASSWORD" ]]; then
+    echo "  Web SSH 密码: ${SSH_PASSWORD}"
+  else
+    echo "  Web SSH 密码: （未单独设置，复用管理员密码）"
+  fi
+  echo "  Web SSH 锁定: 密码错误 5 次锁定该客户端 24 小时（yufu-server unlock <uuid> 可手动解）"
   echo ""
   echo "  安装目录: ${INSTALL_DIR}"
   echo "  常用命令:"

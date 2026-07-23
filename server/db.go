@@ -105,6 +105,11 @@ func InitDB(path string) (*sql.DB, error) {
 			name TEXT PRIMARY KEY,
 			created_at INTEGER DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS ssh_lock (
+			uuid TEXT PRIMARY KEY,
+			fail_count INTEGER DEFAULT 0,
+			locked_until INTEGER DEFAULT 0
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err = db.Exec(s); err != nil {
@@ -293,4 +298,56 @@ func GetTrafficHistory(db *sql.DB, uuid string) ([]MonthlyTraffic, error) {
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// ---------- Web SSH 锁定（落盘持久化）----------
+// 规则：某客户端 SSH 密码连续错误 5 次 → 锁定 24 小时；24h 后自动解锁；
+// 密码正确时清零失败计数。锁定状态存 ssh_lock 表，服务端重启不丢。
+
+// GetSSHLock 读取某 uuid 的 SSH 失败计数与锁定截止时间（Unix 秒）。
+// 无记录时返回 (0,0,nil)，表示从未失败、未锁定。
+func GetSSHLock(db *sql.DB, uuid string) (failCount int, lockedUntil int64, err error) {
+	err = db.QueryRow(`SELECT fail_count, locked_until FROM ssh_lock WHERE uuid=?`, uuid).
+		Scan(&failCount, &lockedUntil)
+	if err == sql.ErrNoRows {
+		return 0, 0, nil
+	}
+	return
+}
+
+// RecordSSHFailure 记录一次密码失败，返回是否因此被锁定以及锁定截止时间。
+// 失败达到 5 次即锁定 24 小时（locked_until = now+24h）。
+func RecordSSHFailure(db *sql.DB, uuid string) (locked bool, lockedUntil int64, err error) {
+	now := time.Now().Unix()
+	fail, until, _ := GetSSHLock(db, uuid)
+	fail++
+	if fail >= 5 {
+		lockedUntil = now + 24*3600
+		locked = true
+	} else {
+		lockedUntil = until
+	}
+	_, err = db.Exec(`INSERT INTO ssh_lock (uuid, fail_count, locked_until) VALUES (?,?,?)
+		ON CONFLICT(uuid) DO UPDATE SET fail_count=excluded.fail_count, locked_until=excluded.locked_until`,
+		uuid, fail, lockedUntil)
+	return
+}
+
+// ResetSSHLock 密码正确时调用：清零失败计数与锁定时间。
+func ResetSSHLock(db *sql.DB, uuid string) error {
+	_, err := db.Exec(`INSERT INTO ssh_lock (uuid, fail_count, locked_until) VALUES (?,0,0)
+		ON CONFLICT(uuid) DO UPDATE SET fail_count=0, locked_until=0`, uuid)
+	return err
+}
+
+// UnlockSSH 手动解锁单台客户端（管理员介入）。
+func UnlockSSH(db *sql.DB, uuid string) error {
+	_, err := db.Exec(`DELETE FROM ssh_lock WHERE uuid=?`, uuid)
+	return err
+}
+
+// UnlockAllSSH 一键解除全部 SSH 锁定（运维兜底）。
+func UnlockAllSSH(db *sql.DB) error {
+	_, err := db.Exec(`DELETE FROM ssh_lock`)
+	return err
 }

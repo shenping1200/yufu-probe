@@ -405,3 +405,31 @@ body.light .modal-box input[type=date] { color-scheme: light; }
   .group-tabs { padding: 0 14px 14px; gap: 8px; }
   .group-tab { padding: 6px 12px; font-size: 12px; }
 }
+
+/* ---------- Web SSH 终端按钮（与 .btn-edit 同款） ---------- */
+.btn-ssh {
+  margin-left: 6px; padding: 2px 8px; font-size: 13px; line-height: 1.4;
+  border: 1px solid var(--border); background: var(--bg-3); color: var(--text-2);
+  border-radius: 6px; cursor: pointer;
+}
+.btn-ssh:hover { border-color: var(--primary); color: var(--primary); }
+
+/* ---------- SSH 密码弹窗 ---------- */
+#sshPassModal .modal-box { width: 380px; }
+#sshPassModal input { letter-spacing: 1px; }
+#sshPassErr { color: var(--danger); font-size: 12px; min-height: 16px; margin-top: 8px; }
+
+/* ---------- 终端弹窗（xterm.js 桥接） ---------- */
+.term-box { width: 82vw; max-width: 1000px; }
+.term-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 12px;
+}
+.term-bar #termTitle { font-size: 14px; font-weight: 600; color: var(--text); }
+#term {
+  height: 62vh; min-height: 360px; background: #1e1e1e; border-radius: 8px;
+  padding: 8px; box-sizing: border-box; overflow: hidden;
+}
+#term .xterm { height: 100%; }
+.term-status { font-size: 12px; color: var(--text-2); margin-top: 8px; min-height: 16px; }
+.term-status.err { color: var(--danger); }

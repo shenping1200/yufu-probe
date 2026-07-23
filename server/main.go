@@ -4,10 +4,35 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
 func main() {
+	// 子命令：yufu-server unlock <uuid> 解除单台；yufu-server unlock 解除全部（运维兜底）
+	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+		cfg, err := LoadConfig("configs/server.yaml")
+		if err != nil {
+			log.Fatalf("load config: %v", err)
+		}
+		db, err := InitDB(cfg.DBPath)
+		if err != nil {
+			log.Fatalf("init db: %v", err)
+		}
+		if len(os.Args) > 2 {
+			if err := UnlockSSH(db, os.Args[2]); err != nil {
+				log.Fatalf("unlock: %v", err)
+			}
+			fmt.Printf("已解除 SSH 锁定: %s\n", os.Args[2])
+		} else {
+			if err := UnlockAllSSH(db); err != nil {
+				log.Fatalf("unlock all: %v", err)
+			}
+			fmt.Println("已一键解除全部 SSH 锁定")
+		}
+		return
+	}
+
 	cfg, err := LoadConfig("configs/server.yaml")
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -15,6 +40,10 @@ func main() {
 	db, err := InitDB(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("init db: %v", err)
+	}
+	// Web SSH 密码回退提示：未显式设置 ssh_password 时，复用管理员密码
+	if cfg.SSHPassword == "" {
+		log.Printf("[probe] ssh_password 未设置，Web SSH 将复用管理员密码（建议在 server.yaml 显式设置 ssh_password）")
 	}
 	hub := NewHub()
 	// 启动时把 DB 全量载入内存，作为实时状态基盘

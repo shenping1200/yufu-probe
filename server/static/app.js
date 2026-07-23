@@ -494,7 +494,7 @@ function cardHTML(a) {
       <div class="card-header">
         <div class="card-title">
           <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
-          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button>
+          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button>${a.online ? `<button class="btn-ssh" data-uuid="${a.uuid}" title="Web SSH 终端">SSH</button>` : ''}
         </div>
         <div class="card-status">
           <span class="dot ${a.online ? 'on' : 'off'}"></span>
@@ -563,6 +563,9 @@ function renderCard() {
   });
   grid.querySelectorAll('.btn-edit').forEach(btn => {
     btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); };
+  });
+  grid.querySelectorAll('.btn-ssh').forEach(btn => {
+    btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); };
   });
   bindAliasInputs('.card-name');
 }
@@ -642,7 +645,7 @@ function listRowHTML(a) {
       </td>
       <td><span class="down">↓${fmtRate(a.rx_rate)}</span><br><span class="up">↑${fmtRate(a.tx_rate)}</span></td>
       <td><span class="down">${fmtBytes(a.rx_month)}</span><br><span class="up">${fmtBytes(a.tx_month)}</span></td>
-      <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button></td>
+      <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button>${a.online ? ` <button class="btn-ssh" data-uuid="${a.uuid}">SSH</button>` : ''}</td>
     </tr>
   `;
 }
@@ -680,6 +683,9 @@ function renderList() {
   });
   table.querySelectorAll('.btn-edit').forEach(btn => {
     btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); };
+  });
+  table.querySelectorAll('.btn-ssh').forEach(btn => {
+    btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); };
   });
   bindAliasInputs('.list-name');
 }
@@ -768,6 +774,111 @@ document.getElementById('installCloseBtn').onclick = () => {
 };
 document.getElementById('installModal').addEventListener('click', e => {
   if (e.target.id === 'installModal') document.getElementById('installModal').classList.add('hidden');
+});
+
+// ---------- Web SSH 终端 ----------
+let term = null, termFit = null, termWS = null, termUUID = '', termResizeHandler = null;
+
+// base64 编解码（兼容中文等非 Latin1 字符）
+function b64enc(str) { return btoa(unescape(encodeURIComponent(str))); }
+function b64dec(b64) { return decodeURIComponent(escape(atob(b64))); }
+
+// 打开密码弹窗
+function openSSH(uuid) {
+  termUUID = uuid;
+  document.getElementById('sshPassInput').value = '';
+  document.getElementById('sshPassErr').textContent = '';
+  document.getElementById('sshPassModal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('sshPassInput').focus(), 50);
+}
+
+function closeSSHPass() {
+  document.getElementById('sshPassModal').classList.add('hidden');
+}
+
+function doCloseTerminal() {
+  if (termWS) { try { termWS.close(); } catch (e) {} termWS = null; }
+  if (term) { try { term.dispose(); } catch (e) {} term = null; termFit = null; }
+  if (termResizeHandler) { window.removeEventListener('resize', termResizeHandler); termResizeHandler = null; }
+  document.getElementById('termModal').classList.add('hidden');
+}
+
+function closeTerminal(delay) {
+  if (delay) setTimeout(doCloseTerminal, delay);
+  else doCloseTerminal();
+}
+
+function startTerminal(uuid, password) {
+  term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: 'ui-monospace,Menlo,Consolas,monospace',
+    theme: { background: '#1e1e1e', foreground: '#f0f0f0' },
+  });
+  termFit = new FitAddon.FitAddon();
+  term.loadAddon(termFit);
+  const box = document.getElementById('term');
+  box.innerHTML = '';
+  term.open(box);
+  termFit.fit();
+  term.focus();
+  document.getElementById('termTitle').textContent = 'Web SSH — ' + uuid.slice(0, 8);
+  document.getElementById('termModal').classList.remove('hidden');
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  termWS = new WebSocket(proto + '://' + location.host + '/ws/terminal/' + encodeURIComponent(uuid));
+  termWS.onopen = () => {
+    termWS.send(JSON.stringify({ action: 'auth', password, cols: term.cols, rows: term.rows }));
+  };
+  termWS.onmessage = (e) => {
+    let m;
+    try { m = JSON.parse(e.data); } catch (err) { return; }
+    if (m.action === 'ready') {
+      try { termFit.fit(); } catch (err) {}
+    } else if (m.action === 'data') {
+      try { term.write(b64dec(m.data)); } catch (err) { term.write(m.data); }
+    } else if (m.action === 'error') {
+      term.write('\r\n\x1b[31m' + m.message + '\x1b[0m\r\n');
+      closeTerminal(2500);
+    } else if (m.action === 'ended') {
+      term.write('\r\n\x1b[33m' + m.message + '\x1b[0m\r\n');
+      closeTerminal(1500);
+    }
+  };
+  termWS.onclose = () => {
+    term.write('\r\n\x1b[90m[连接已关闭]\x1b[0m\r\n');
+  };
+  term.onData(d => {
+    if (termWS && termWS.readyState === 1) {
+      termWS.send(JSON.stringify({ action: 'input', data: b64enc(d) }));
+    }
+  });
+  term.onResize(({ cols, rows }) => {
+    if (termWS && termWS.readyState === 1) {
+      termWS.send(JSON.stringify({ action: 'resize', cols, rows }));
+    }
+  });
+  // 浏览器窗口缩放时重新适配终端
+  termResizeHandler = () => { if (term && termFit) { try { termFit.fit(); } catch (e) {} } };
+  window.addEventListener('resize', termResizeHandler);
+}
+
+document.getElementById('sshPassConnect').onclick = () => {
+  const pw = document.getElementById('sshPassInput').value;
+  const uuid = termUUID;
+  closeSSHPass();
+  startTerminal(uuid, pw);
+};
+document.getElementById('sshPassInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('sshPassConnect').click();
+});
+document.getElementById('sshPassCancel').onclick = closeSSHPass;
+document.getElementById('sshPassModal').addEventListener('click', e => {
+  if (e.target.id === 'sshPassModal') closeSSHPass();
+});
+document.getElementById('termClose').onclick = () => closeTerminal(0);
+document.getElementById('termModal').addEventListener('click', e => {
+  if (e.target.id === 'termModal') closeTerminal(0);
 });
 
 checkLogin();

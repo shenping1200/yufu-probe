@@ -6,6 +6,7 @@
 <title>渔夫探针</title>
 <link rel="icon" type="image/png" href="/icons/favicon.png?v=21">
 <link rel="stylesheet" href="/style.css?v=19">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
 </head>
 <body>
 <div id="login" class="login-box">
@@ -109,9 +110,34 @@
       </div>
     </div>
   </div>
+
+  <div id="sshPassModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Web SSH 连接</h3>
+      <p style="color:var(--text-2);font-size:13px;margin:-4px 0 8px">请输入 Web SSH 密码（服务端设置，连续错误 5 次将锁定该客户端 24 小时）。</p>
+      <input id="sshPassInput" type="password" placeholder="SSH 密码" autocomplete="off">
+      <div id="sshPassErr" class="err"></div>
+      <div class="modal-actions">
+        <button id="sshPassCancel">取消</button>
+        <button id="sshPassConnect" class="primary">连接</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="termModal" class="modal hidden">
+    <div class="modal-box term-box">
+      <div class="term-bar">
+        <strong id="termTitle">Web SSH</strong>
+        <button id="termClose">关闭</button>
+      </div>
+      <div id="term"></div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-<script src="/app.js?v=17"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<script src="/app.js?v=18"></script>
 </body>
 </html>

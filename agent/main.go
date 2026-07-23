@@ -97,6 +97,14 @@ func main() {
 	log.Printf("[agent] uuid=%s server=%s interval=%ds", id, cfg.Server, cfg.Interval)
 	locale, _ := time.LoadLocation("Local")
 	_ = locale
+	// 连接后立即上报一次，让服务端尽快把本机登记到 hub（Web SSH 立即可用，
+	// 不必等到第一个上报周期，默认 interval 秒后才登记）。
+	if snap0, err := col.collect(float64(cfg.Interval)); err == nil {
+		select {
+		case send <- snap0:
+		default:
+		}
+	}
 	ticker := time.NewTicker(time.Duration(cfg.Interval) * time.Second)
 	for range ticker.C {
 		snap, err := col.collect(float64(cfg.Interval))

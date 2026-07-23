@@ -31,7 +31,7 @@ var upgrader = websocket.Upgrader{
 
 // 源码仓库全名（用于生成安装命令的下载链接），与 install-agent.sh 默认仓库保持一致
 const repoOwner = "shenping1200"
-const repoName  = "yufu-probe"
+const repoName = "yufu-probe"
 
 func repoFullName() string { return repoOwner + "/" + repoName }
 
@@ -232,17 +232,17 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 				}
 			}
 		}
-	if err := UpdateAgent(db, uuid, alias, remark, group, expireAt); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	live.UpdateAdmin(uuid, alias, remark, group, expireAt)
-	// 保持内存态「分组名注册表」与 DB 一致：通过编辑弹窗手输的新名字也要注册进来
-	if group != "" {
-		live.AddGroup(group)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		if err := UpdateAgent(db, uuid, alias, remark, group, expireAt); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		live.UpdateAdmin(uuid, alias, remark, group, expireAt)
+		// 保持内存态「分组名注册表」与 DB 一致：通过编辑弹窗手输的新名字也要注册进来
+		if group != "" {
+			live.AddGroup(group)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
 }
 
@@ -390,7 +390,17 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		// agent 连接也需要一个 Client 句柄（终端网关靠它 safeWrite 下发 shell 指令）。
+		// 这里不跑 writePump：agent 方向走带锁的 safeWrite 直写，不用 send 通道。
+		client := &Client{hub: hub, conn: conn, send: make(chan []byte, 8), role: "agent"}
+		var agentUUID string
+		defer func() {
+			if agentUUID != "" {
+				hub.removeAgent(agentUUID)
+				notifyAgentGone(agentUUID) // 关闭该 agent 名下所有 Web SSH 会话
+			}
+			conn.Close()
+		}()
 		for {
 			_, data, err := conn.ReadMessage()
 			if err != nil {
@@ -405,28 +415,55 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 				if ctrl.UUID != "" {
 					DeleteAgent(db, ctrl.UUID)
 					live.Remove(ctrl.UUID)
+					hub.removeAgent(ctrl.UUID)
+					notifyAgentGone(ctrl.UUID)
 					broadcastAgents(hub)
 					log.Printf("[ws] agent %s 已注销", ctrl.UUID)
 				}
 				return
 			}
-			// 2) 普通状态上报：只更新内存，不做 DB 写入、不广播
+			// 2) Web SSH：agent 回传的 shell 输出/结束信号，按会话 id 转发给浏览器
+			var term struct {
+				Action  string `json:"action"`
+				Session string `json:"session"`
+				Data    string `json:"data"`
+			}
+			if err := json.Unmarshal(data, &term); err == nil {
+				switch term.Action {
+				case "shell_data":
+					forwardShellData(term.Session, term.Data)
+					continue
+				case "shell_exit":
+					if ts := unregisterTerm(term.Session); ts != nil {
+						ts.browser.writeJSON(map[string]string{"action": "ended", "message": "会话已结束"})
+					}
+					continue
+				}
+			}
+			// 3) 普通状态上报：只更新内存，不做 DB 写入、不广播
 			var rep AgentReport
 			if err := json.Unmarshal(data, &rep); err != nil || rep.UUID == "" {
 				continue
 			}
-		// 地理定位优先用公网 IPv4，其次 v6，再其次老字段 public_ip，
-		// 缺失时回退到上报的内网 IP
-		geoIP := rep.PublicIP4
-		if geoIP == "" {
-			geoIP = rep.PublicIP6
-		}
-		if geoIP == "" {
-			geoIP = rep.PublicIP
-		}
-		if geoIP == "" {
-			geoIP = rep.IP
-		}
+			// 首次收到带 UUID 的上报时，把该 agent 连接登记到 hub，
+			// 供 Web SSH 终端网关按 uuid 找到目标客户端并下发 shell 指令。
+			if agentUUID == "" {
+				agentUUID = rep.UUID
+				hub.addAgent(agentUUID, client)
+				log.Printf("[ws] agent %s 已登记，Web SSH 可用", agentUUID)
+			}
+			// 地理定位优先用公网 IPv4，其次 v6，再其次老字段 public_ip，
+			// 缺失时回退到上报的内网 IP
+			geoIP := rep.PublicIP4
+			if geoIP == "" {
+				geoIP = rep.PublicIP6
+			}
+			if geoIP == "" {
+				geoIP = rep.PublicIP
+			}
+			if geoIP == "" {
+				geoIP = rep.IP
+			}
 			country, code := "", ""
 			if !isPrivateIP(geoIP) {
 				country, code = lookupCountry(db, geoIP, rep.UUID)
@@ -482,6 +519,10 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/agents/{uuid}/traffic", requireLogin(db, trafficHandler(db))).Methods("GET")
 	r.HandleFunc("/ws/agent", agentWSHandler(cfg, db, hub))
 	r.HandleFunc("/ws/viewer", viewerWSHandler(db, hub))
+	// Web SSH 终端网关：浏览器按 uuid 连接，服务端校验后桥接 agent
+	r.HandleFunc("/ws/terminal/{uuid}", requireLogin(db, terminalWSHandler(cfg, db, hub)))
+	// 手动解除 SSH 锁定（单台或全量）
+	r.HandleFunc("/api/ssh/unlock", requireLogin(db, unlockHandler(db))).Methods("POST")
 	r.PathPrefix("/").Handler(http.FileServer(http.FS(staticSubFS)))
 	return r
 }
