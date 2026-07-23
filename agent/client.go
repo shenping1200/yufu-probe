@@ -263,22 +263,3 @@ func (r *Reporter) sendControl(action, session, data string) {
 	msg, _ := json.Marshal(map[string]string{"action": action, "session": session, "data": data})
 	r.writeMsg(websocket.TextMessage, msg)
 }
-
-// Unregister 主动通知服务端注销本 agent（优雅停止时调用）。
-// 通过一条独立的 WS 连接发送 {"action":"unregister","uuid":...}，
-// 让服务端立即删除该机器记录，无需再到面板手动清理。
-func (r *Reporter) Unregister() {
-	msg, _ := json.Marshal(map[string]interface{}{"action": "unregister", "uuid": r.uuid})
-	c, _, err := websocket.DefaultDialer.Dial(r.url, nil)
-	if err != nil {
-		log.Printf("[agent] unregister 连接失败: %v", err)
-		return
-	}
-	defer c.Close()
-	if err := c.WriteMessage(websocket.TextMessage, msg); err != nil {
-		log.Printf("[agent] unregister 发送失败: %v", err)
-		return
-	}
-	log.Printf("[agent] 已发送注销请求，服务端将移除本机")
-	time.Sleep(500 * time.Millisecond)
-}

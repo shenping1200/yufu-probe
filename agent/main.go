@@ -84,13 +84,17 @@ func main() {
 	send := make(chan *Snapshot, 1)
 	go rep.Run(send)
 
-	// 优雅停止：收到 SIGTERM/SIGINT 时主动通知服务端注销，再退出
+	// 优雅停止：收到 SIGTERM/SIGINT 时退出进程。
+	// 注意：这里**不**主动向服务端发 unregister（注销并删除记录）。
+	// 否则正常的重启 / 升级（install-agent.sh 会 restart 本服务）会触发注销，
+	// 服务端 DeleteAgent 把这台机器的备注 / 别名等数据一并删掉，重连后只得到空记录。
+	// 卸载由 uninstall-agent.sh 通过 DELETE /api/agents/{uuid} 显式完成；
+	// 这里只做进程退出，服务端会在超时后把机器标记为离线并保留记录。
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		log.Println("[agent] 收到退出信号，正在通知服务端注销本机...")
-		rep.Unregister()
+		log.Println("[agent] 收到退出信号，正在退出（不注销服务端记录）...")
 		os.Exit(0)
 	}()
 
