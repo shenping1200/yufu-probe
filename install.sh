@@ -396,6 +396,59 @@ do_unlock() {
   echo "（如需仅解封某台客户端：docker compose exec server probe-server unlock <uuid>）"
 }
 
+# ---------- 修改 Web SSH 密码 ----------
+do_change_ssh_password() {
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    err "未找到安装目录 $INSTALL_DIR（若自定义过目录，请 INSTALL_DIR=/your/path bash $0）"
+  fi
+  cd "$INSTALL_DIR" || err "无法进入安装目录 $INSTALL_DIR"
+
+  CFG="configs/server.yaml"
+  [[ -f "$CFG" ]] || err "未找到 $CFG（当前目录: $(pwd)）"
+
+  read -rp "新 Web SSH 密码（直接回车则复用管理员密码）: " NEW_PW
+
+  # 避免特殊字符破坏 sed / YAML
+  case "$NEW_PW" in
+    *'"'*|*'\'*|*'&'*|*'|'*) err "密码暂不支持包含双引号、反斜杠、& 或 | 字符，请换一个" ;;
+  esac
+
+  # 备份
+  cp -f "$CFG" "$CFG.bak.$(date +%s)"
+  info "已备份原配置"
+
+  # 幂等写入：有 ssh_password 行则替换，无则追加
+  if grep -qE '^[[:space:]]*ssh_password:' "$CFG"; then
+    sed -i -E "s|^[[:space:]]*ssh_password:.*|ssh_password: \"${NEW_PW}\"|" "$CFG"
+  else
+    printf 'ssh_password: "%s"\n' "$NEW_PW" >> "$CFG"
+  fi
+
+  # 重启容器使配置重新读取
+  $COMPOSE restart server 2>/dev/null || docker-compose restart server 2>/dev/null || {
+    err "重启失败，请手动执行: cd $INSTALL_DIR && docker compose restart server"
+  }
+  sleep 3
+
+  # 验证：容器内实际配置
+  info "容器内实际配置（/app/configs/server.yaml）："
+  if $COMPOSE exec -T server grep -n 'ssh_password' /app/configs/server.yaml 2>/dev/null; then
+    ok "容器内已包含 ssh_password（挂载生效）"
+  else
+    warn "容器内未读到 ssh_password（请检查 docker-compose.yml 是否正确挂载 configs/server.yaml）"
+  fi
+
+  # 验证：启动日志不应再出现“未设置”
+  info "启动日志检查："
+  $COMPOSE logs --tail=8 server 2>/dev/null | grep -i 'ssh_password' || echo "OK：日志无 '未设置' 提示，密码已生效"
+
+  if [[ -n "$NEW_PW" ]]; then
+    echo "完成后，Web SSH 连接请使用新密码。"
+  else
+    echo "完成后，Web SSH 将复用管理员密码。"
+  fi
+}
+
 # ---------- 安装（保持原有逻辑不变）----------
 do_install() {
   check_env
@@ -414,12 +467,14 @@ if [[ -t 0 ]]; then
   echo "1) 安装"
   echo "2) 卸载"
   echo "3) 解封（Web SSH 锁定一键解除）"
+  echo "4) 修改 SSH 密码"
   echo "=========================================="
-  read -rp "请选择 [1/2/3]: " top || true
+  read -rp "请选择 [1/2/3/4]: " top || true
   case "$top" in
     1) do_install ;;
     2) do_uninstall ;;
     3) do_unlock ;;
+    4) do_change_ssh_password ;;
     *) err "无效选择: $top" ;;
   esac
 else
