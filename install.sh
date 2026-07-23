@@ -87,6 +87,11 @@ read_config() {
     err "端口号无效: $PORT"
   fi
 
+  # Web SSH 连接密码（方案 A：连接客户端时一次静态口令确认，服务端校验）。
+  # 留空则复用管理员密码；建议新装时单独设置一个，与管理员密码解耦。
+  read -rp "Web SSH 连接密码（留空则复用管理员密码）: " SSH_PASSWORD
+  info "解封：SSH 密码错误 5 次会锁定该客户端 24h；运维可用 yufu-server unlock <uuid> 解封（或 yufu-server unlock 解全部），无需在此设置"
+
   read -rp "管理员用户名 [admin]: " ADMIN_USER
   ADMIN_USER=${ADMIN_USER:-admin}
 
@@ -97,10 +102,6 @@ read_config() {
   DEFAULT_TOKEN="change-me-agent-token"
   read -rp "Agent 接入 Token [$DEFAULT_TOKEN]: " AGENT_TOKEN
   AGENT_TOKEN=${AGENT_TOKEN:-$DEFAULT_TOKEN}
-
-  # Web SSH 连接密码（方案 A：连接客户端时一次静态口令确认，服务端校验）。
-  # 留空则复用管理员密码；建议新装时单独设置一个，与管理员密码解耦。
-  read -rp "Web SSH 连接密码（留空则复用管理员密码）: " SSH_PASSWORD
 
   read -rp "绑定域名（留空则使用 IP:端口 访问）: " DOMAIN
 
