@@ -90,7 +90,7 @@ read_config() {
   # Web SSH 连接密码（方案 A：连接客户端时一次静态口令确认，服务端校验）。
   # 留空则复用管理员密码；建议新装时单独设置一个，与管理员密码解耦。
   read -rp "Web SSH 连接密码（留空则复用管理员密码）: " SSH_PASSWORD
-  info "解封：SSH 密码错误 5 次会锁定该客户端 24h；运维可用 yufu-server unlock <uuid> 解封（或 yufu-server unlock 解全部），无需在此设置"
+  info "解封：SSH 密码错误 5 次会锁定该客户端 24h；运维可执行 'docker compose exec server probe-server unlock <uuid>' 解封（不带 uuid 则解全部），无需在此设置"
 
   read -rp "管理员用户名 [admin]: " ADMIN_USER
   ADMIN_USER=${ADMIN_USER:-admin}
@@ -262,7 +262,7 @@ print_summary() {
   else
     echo "  Web SSH 密码: （未单独设置，复用管理员密码）"
   fi
-  echo "  Web SSH 锁定: 密码错误 5 次锁定该客户端 24 小时（yufu-server unlock <uuid> 可手动解）"
+  echo "  Web SSH 锁定: 密码错误 5 次锁定该客户端 24 小时（docker compose exec server probe-server unlock <uuid> 解单台，不带 uuid 解全部）"
   echo ""
   echo "  安装目录: ${INSTALL_DIR}"
   echo "  常用命令:"
