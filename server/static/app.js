@@ -514,10 +514,10 @@ function cardHTML(a) {
         <div class="card-title">
           <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
           <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button>${a.online ? `<button class="btn-ssh" data-uuid="${a.uuid}" title="Web SSH 终端">SSH</button>` : ''}
-        </div>
-        <div class="card-status">
-          <span class="dot ${a.online ? 'on' : 'off'}"></span>
-          <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
+          <div class="card-status">
+            <span class="dot ${a.online ? 'on' : 'off'}"></span>
+            <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
+          </div>
         </div>
       </div>
       <div class="card-meta">

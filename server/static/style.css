@@ -116,7 +116,7 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .card-header {
   display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px;
 }
-.card-title { display: flex; align-items: center; gap: 10px; }
+.card-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-title .flag { font-size: 22px; line-height: 1; }
 /* 自托管图标（发行版 logo / 国旗），以图片替代 emoji，零外链，适配内网/离线 */
 /* 发行版 logo 为内联 SVG，fill=currentColor，靠 color 跟随主题文字色 */
@@ -127,7 +127,7 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .card-name {
   font-size: 15px; font-weight: 700; color: var(--text);
   background: transparent; border: 1px solid transparent; border-radius: 6px;
-  padding: 2px 6px; width: 180px;
+  padding: 2px 6px; width: 130px; min-width: 0; flex: 0 1 130px;
 }
 .card-name:hover, .card-name:focus {
   background: var(--bg-3); border-color: var(--border); outline: none;
