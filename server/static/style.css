@@ -135,6 +135,7 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .card-status {
   display: flex; align-items: center; gap: 6px; font-size: 12px;
   padding: 4px 10px; border-radius: 20px; background: var(--bg-3);
+  flex-shrink: 0; white-space: nowrap;
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; }
 .dot.on { background: var(--success); box-shadow: 0 0 6px var(--success); }
