@@ -97,7 +97,7 @@ type StressParams struct {
 	Countries    []string `json:"countries"`
 	Oses         []string `json:"oses"`
 	DurationSec  int      `json:"duration_sec"` // 0 = 手动停止
-	UptimeMin    int      `json:"uptime_min"`  // 天；0 = 随机
+	UptimeMin    int      `json:"uptime_min"`   // 天；0 = 随机
 	UptimeMax    int      `json:"uptime_max"`
 	TrafficLevel string   `json:"traffic_level"` // low/mid/high/random
 	OnlineRatio  float64  `json:"online_ratio"`  // 0..1，默认 1
@@ -105,7 +105,7 @@ type StressParams struct {
 	CpuMax       float64  `json:"cpu_max"`
 	MemMin       float64  `json:"mem_min"` // 使用率 %；0 = 随机
 	MemMax       float64  `json:"mem_max"`
-	CpuCoresMin  int      `json:"cpu_cores_min"`  // 核心数；0 = 随机
+	CpuCoresMin  int      `json:"cpu_cores_min"` // 核心数；0 = 随机
 	CpuCoresMax  int      `json:"cpu_cores_max"`
 	MemTotalMin  float64  `json:"mem_total_min"` // GB；0 = 随机
 	MemTotalMax  float64  `json:"mem_total_max"`
@@ -115,38 +115,38 @@ type StressParams struct {
 }
 
 type stressAgent struct {
-	r         *mrand.Rand
-	uuid      string
-	hostname  string
-	ip        string
-	country   string
+	r           *mrand.Rand
+	uuid        string
+	hostname    string
+	ip          string
+	country     string
 	countryCode string
-	osName    string
-	platform  string
-	cpuCount  int
-	memTotal  int     // GB（整数，仅 1 或偶数）
-	diskTotal int     // GB（整数，仅 10 的倍数）
-	uptime    int64
-	cpu       float64
-	memPct    float64
-	memUsed   float64
-	diskUsed  float64
-	rxRate    float64
-	txRate    float64
-	online    bool
+	osName      string
+	platform    string
+	cpuCount    int
+	memTotal    int // GB（整数，仅 1 或偶数）
+	diskTotal   int // GB（整数，仅 10 的倍数）
+	uptime      int64
+	cpu         float64
+	memPct      float64
+	memUsed     float64
+	diskUsed    float64
+	rxRate      float64
+	txRate      float64
+	online      bool
 }
 
 type StressEngine struct {
-	mu       sync.Mutex
-	running  bool
+	mu        sync.Mutex
+	running   bool
 	startTime time.Time
-	stopFn   context.CancelFunc
-	agents   []stressAgent
-	group    string
-	db       *sql.DB
-	hub      *Hub
-	params   StressParams
-	interval time.Duration
+	stopFn    context.CancelFunc
+	agents    []stressAgent
+	group     string
+	db        *sql.DB
+	hub       *Hub
+	params    StressParams
+	interval  time.Duration
 }
 
 // 全局唯一引擎实例（包内 handler 直接引用）
@@ -361,6 +361,9 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 	if p.DiskTotalMin > 0 && p.DiskTotalMax > 0 {
 		diskTotal = pickMultipleOf10(r, int(p.DiskTotalMin), int(p.DiskTotalMax))
 	}
+	// 无论前面设置的天数范围如何（默认随机 / 用户指定范围 / 固定值），都额外叠 0-23 随机小时，
+	// 避免运行时间总卡在整数天边界（如"30天"看着假），看起来更像真实机器。
+	uptimeHours := r.Intn(24) // 0..23 闭区间
 	a := stressAgent{
 		r:           r,
 		uuid:        newUUID(),
@@ -373,7 +376,7 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		cpuCount:    cpuCount,
 		memTotal:    memTotal,
 		diskTotal:   diskTotal,
-		uptime:      int64(uptimeDays) * 86400,
+		uptime:      int64(uptimeDays)*86400 + int64(uptimeHours)*3600,
 		online:      r.Float64() < p.OnlineRatio,
 	}
 	a.memPct = rnd(r, 10, 90)
