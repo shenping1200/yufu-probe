@@ -134,6 +134,8 @@ type stressAgent struct {
 	rxRate      float64
 	txRate      float64
 	online      bool
+	// work 性格：决定 rx/tx 的分布范围与波动幅度，让聚合流量看起来像真业务
+	kind workloadKind
 }
 
 type StressEngine struct {
@@ -295,6 +297,48 @@ func trafficCap(level string) float64 {
 	}
 }
 
+// ---------- 工作负载性格 ----------
+// 给每台压测机一个"在做什么"的角色，决定 rx/tx 的量级与不对称性。
+// 真实机房里不同机器做着不同的事：web/cdn 下载型、API 略下载、备份上传型、
+// 计算节点几乎空闲、流媒体下载极重。聚合起来 rx/tx 不再趋同，分布更真实。
+type workloadKind int
+
+const (
+	wkWeb     workloadKind = iota // web/cdn：下载 >> 上传
+	wkAPI                         // API/接口：rx 略大于 tx，量中等
+	wkStorage                     // 备份/存储/NFS：上传 >> 下载
+	wkCompute                     // 计算/批处理：流量很小，多在空闲
+	wkMedia                       // 流媒体/大文件下载：下载 >> 上传（比 web 更极端）
+)
+
+// workloadProfile 定义某种性格的 rx/tx 速率区间（×cap 系数）和 tick 波动幅度
+type workloadProfile struct {
+	rxLo, rxHi float64 // 初始速率区间（下界、上界），相对 cap 的系数
+	txLo, txHi float64
+	walkFrac   float64 // tick 走动幅度占 (hi-lo) 区间的比例
+}
+
+var workloadProfiles = map[workloadKind]workloadProfile{
+	wkWeb:     {rxLo: 0.05, rxHi: 0.70, txLo: 0.005, txHi: 0.06, walkFrac: 0.12}, // 下载型
+	wkAPI:     {rxLo: 0.05, rxHi: 0.35, txLo: 0.02, txHi: 0.12, walkFrac: 0.10},  // API
+	wkStorage: {rxLo: 0.02, rxHi: 0.15, txLo: 0.15, txHi: 0.75, walkFrac: 0.12},  // 上传型
+	wkCompute: {rxLo: 0.00, rxHi: 0.05, txLo: 0.00, txHi: 0.03, walkFrac: 0.15},  // 几乎空闲
+	wkMedia:   {rxLo: 0.30, rxHi: 0.95, txLo: 0.005, txHi: 0.04, walkFrac: 0.10},  // 极高下载比
+}
+
+// 各类在压测机里的占比（权重表）：web 35% / api 25% / 存储 15% / 计算 15% / 流媒体 10%
+var workloadWeights = []workloadKind{
+	wkWeb, wkWeb, wkWeb, wkWeb, wkWeb, wkWeb, wkWeb, // 7
+	wkAPI, wkAPI, wkAPI, wkAPI, wkAPI, // 5
+	wkStorage, wkStorage, wkStorage, // 3
+	wkCompute, wkCompute, wkCompute, // 3
+	wkMedia, wkMedia, // 2
+}
+
+func pickWorkload(r *mrand.Rand) workloadKind {
+	return workloadWeights[r.Intn(len(workloadWeights))]
+}
+
 func pickCountry(r *mrand.Rand, codes []string) countryInfo {
 	if len(codes) > 0 {
 		code := codes[r.Intn(len(codes))]
@@ -383,8 +427,11 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 	a.memUsed = float64(a.memTotal) * a.memPct / 100
 	a.diskUsed = float64(a.diskTotal) * rnd(r, 0.1, 0.85)
 	cap := trafficCap(p.TrafficLevel)
-	a.rxRate = rnd(r, 0, cap)
-	a.txRate = rnd(r, 0, cap)
+	// 按性格分配初始 rx/tx：让聚合分布呈现真实的不对称和多样性（不再 rx≈tx）
+	a.kind = pickWorkload(r)
+	prof := workloadProfiles[a.kind]
+	a.rxRate = rnd(r, prof.rxLo*cap, prof.rxHi*cap)
+	a.txRate = rnd(r, prof.txLo*cap, prof.txHi*cap)
 	a.cpu = rnd(r, 1, 99)
 	return a
 }
@@ -442,10 +489,13 @@ func (e *StressEngine) pushTick(a *stressAgent) {
 	a.memUsed = float64(a.memTotal) * a.memPct / 100
 	// 磁盘
 	a.diskUsed = clamp(a.diskUsed+rnd(a.r, -3, 3), float64(a.diskTotal)*0.05, float64(a.diskTotal)*0.95)
-	// 流量
+	// 流量：按性格区间随机游走（保持 rx/tx 不对称，看起来像真业务）
 	cap := trafficCap(p.TrafficLevel)
-	a.rxRate = clamp(a.rxRate+rnd(a.r, -cap*0.2, cap*0.2), 0, cap*1.2)
-	a.txRate = clamp(a.txRate+rnd(a.r, -cap*0.2, cap*0.2), 0, cap*1.2)
+	prof := workloadProfiles[a.kind]
+	rxStep := (prof.rxHi - prof.rxLo) * cap * prof.walkFrac
+	txStep := (prof.txHi - prof.txLo) * cap * prof.walkFrac
+	a.rxRate = clamp(a.rxRate+rnd(a.r, -rxStep, rxStep), prof.rxLo*cap, prof.rxHi*cap)
+	a.txRate = clamp(a.txRate+rnd(a.r, -txStep, txStep), prof.txLo*cap, prof.txHi*cap)
 	// 同 pushInitial：用 Ephemeral，只入内存不入库
 	live.ApplyReportEphemeral(buildReport(a, e.interval.Seconds()), a.country, a.countryCode)
 }
