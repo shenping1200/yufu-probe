@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"log"
 	"net"
 	"sort"
 	"sync"
@@ -51,6 +52,13 @@ func (s *ServerState) LoadFromDB(db *sql.DB, month string) {
 	s.mu.Lock()
 	for i := range rows {
 		a := rows[i]
+		// 跳过"幽灵孤儿"：online=0 且 last_seen=0 表示这条记录被写入 DB，
+		// 但客户端从未真正连上来上报过心跳（典型场景：压测/批量脚本误入库的僵尸）。
+		// 真实离线机的 last_seen 是它最后一次上报的时间（永远 >0），不会被误杀，
+		// 监控面板仍能正常显示掉线的真机器。详见 CleanupStale。
+		if !a.Online && a.LastSeen == 0 {
+			continue
+		}
 		s.agents[a.UUID] = &a
 		if a.Group != "" {
 			seenGroups[a.Group] = struct{}{}
@@ -69,6 +77,39 @@ func (s *ServerState) LoadFromDB(db *sql.DB, month string) {
 		s.groups[n] = time.Now().Unix()
 	}
 	s.mu.Unlock()
+}
+
+// CleanupStale 清理内存中的"幽灵孤儿"：online=0 且 last_seen=0 的 agent
+// （被写入 DB 但从未真正连上来上报过心跳的僵尸）。这些不是真实机器，
+// 留着会在面板冒出无意义的"离线幽灵"。真实离线机的 last_seen 永远 >0
+// （是其最后一次上报的时间），因此不会被误删，监控面板仍能正常显示掉线的真机器。
+// 同时把 DB 中同签名的残留行一并删除，避免重启或下次 LoadFromDB 时复活。
+// 由 main.go 在启动后及周期 ticker 中调用。
+func (s *ServerState) CleanupStale(db *sql.DB) {
+	s.mu.Lock()
+	var toRemove []string
+	for uuid, a := range s.agents {
+		if !a.Online && a.LastSeen == 0 {
+			toRemove = append(toRemove, uuid)
+		}
+	}
+	for _, uuid := range toRemove {
+		delete(s.agents, uuid)
+		delete(s.dirty, uuid)
+		delete(s.traffic, uuid)
+	}
+	s.mu.Unlock()
+
+	if db != nil {
+		// 清掉 DB 中同签名的残留行（online=0 且 last_seen=0），幂等且安全：
+		// 真实机器的 last_seen 始终 >0，不会被波及。
+		if _, err := db.Exec(`DELETE FROM agents WHERE online=0 AND last_seen=0`); err != nil {
+			log.Printf("[probe] CleanupStale 清理 DB 幽灵失败: %v", err)
+		}
+	}
+	if len(toRemove) > 0 {
+		log.Printf("[probe] CleanupStale 清理了 %d 台幽灵孤儿机器", len(toRemove))
+	}
 }
 
 // ApplyReport 处理一条上报：原地更新内存、累加流量、标记脏数据，全程不碰 DB、不广播

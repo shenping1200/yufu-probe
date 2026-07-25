@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestApplyReportDualStack 验证：
 //  1. 双栈上报时 v4/v6 均正确透传；
@@ -52,5 +55,32 @@ func TestApplyReportCountryCode(t *testing.T) {
 	s.SetCountry("u1", "🇺🇸 United States", "US")
 	if s.agents["u1"].Country != "🇺🇸 United States" || s.agents["u1"].CountryCode != "US" {
 		t.Fatalf("SetCountry 回写失败: %+v", s.agents["u1"])
+	}
+}
+
+// TestCleanupStale 验证幽灵清理只杀"僵尸"，不误伤真实机器：
+//  1. 幽灵孤儿（online=0 且 last_seen=0，被写入 DB 但从未连上来上报）→ 必须被清；
+//  2. 真实离线机（online=0 但 last_seen>0，曾上报后来掉线）→ 必须保留；
+//  3. 在线机（online=1）→ 必须保留。
+// 这样监控面板既能挡住离线幽灵，又能正常显示真掉线的机器。
+func TestCleanupStale(t *testing.T) {
+	s := NewServerState()
+	now := time.Now().Unix()
+
+	s.agents["ghost"] = &AgentRow{UUID: "ghost", Online: false, LastSeen: 0}
+	s.agents["real-offline"] = &AgentRow{UUID: "real-offline", Online: false, LastSeen: now - 3600}
+	s.agents["online"] = &AgentRow{UUID: "online", Online: true, LastSeen: now}
+
+	// 无 DB（nil）仅验证内存态清理逻辑
+	s.CleanupStale(nil)
+
+	if _, ok := s.agents["ghost"]; ok {
+		t.Fatalf("幽灵孤儿未被清理")
+	}
+	if _, ok := s.agents["real-offline"]; !ok {
+		t.Fatalf("真实离线机被误删（last_seen>0 不应被杀）")
+	}
+	if _, ok := s.agents["online"]; !ok {
+		t.Fatalf("在线机被误删")
 	}
 }

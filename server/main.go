@@ -48,6 +48,9 @@ func main() {
 	hub := NewHub()
 	// 启动时把 DB 全量载入内存，作为实时状态基盘
 	live.LoadFromDB(db, time.Now().Format("2006-01"))
+	// 启动后立即清理一次"幽灵孤儿"（online=0 且 last_seen=0 的僵尸记录），
+	// 防止历史上误入库的离线孤儿在面板冒出来。
+	live.CleanupStale(db)
 
 	// 三个独立周期任务，与上报速率解耦：
 	//  - 每秒向所有 viewer 广播一次内存快照（固定 1 次/秒，不再每条上报都广播）
@@ -69,6 +72,9 @@ func main() {
 		t := time.NewTicker(10 * time.Second)
 		for range t.C {
 			live.SetOffline(15)
+			// 周期清理"幽灵孤儿"：online=0 且 last_seen=0 的僵尸记录，
+			// 防止运行期误入库的离线孤儿污染面板（真实离线机 last_seen>0 不受影响）。
+			live.CleanupStale(db)
 		}
 	}()
 
