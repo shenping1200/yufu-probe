@@ -124,7 +124,7 @@ type stressAgent struct {
 	osName    string
 	platform  string
 	cpuCount  int
-	memTotal  float64 // GB
+	memTotal  int     // GB（整数，仅 1 或偶数）
 	diskTotal float64 // GB
 	uptime    int64
 	cpu       float64
@@ -175,6 +175,49 @@ func clamp(v, lo, hi float64) float64 {
 }
 
 func rnd(r *mrand.Rand, lo, hi float64) float64 { return lo + r.Float64()*(hi-lo) }
+
+// pickEvenOrOne 返回"1 或偶数"：~20% 概率出 1，否则在 [max(lo,2), hi] 区间随机偶数。
+// VPS 硬件规格通常都是 2 的倍数或 1，避免出现 3/5/7 这类不真实的奇数。
+func pickEvenOrOne(r *mrand.Rand, lo, hi int) int {
+	if hi < lo {
+		lo, hi = hi, lo
+	}
+	if lo <= 1 && r.Intn(5) == 0 {
+		return 1
+	}
+	l := lo
+	if l < 2 {
+		l = 2
+	}
+	if l%2 != 0 {
+		l++
+	}
+	if l > hi {
+		if lo <= 1 {
+			return 1
+		}
+		if l%2 != 0 {
+			return l - 1
+		}
+		return l
+	}
+	k := r.Intn(hi/2-l/2+1) + l/2
+	return k * 2
+}
+
+// makeHostname 生成多样化主机名（避免全是 host-XXXXXXXX 风格）：
+// 多种前缀 + 小写字母数字混合后缀，长度 3–10 不等，模拟真实 VPS 命名习惯
+func makeHostname(r *mrand.Rand) string {
+	prefixes := []string{"vps-", "node-", "srv-", "web-", "db-", "cache-", "box-", "app-", "ct", "vm-", "edge-", "prod-", "stg-", "h-", "k8s-", "lab-", "mx-", ""}
+	p := prefixes[r.Intn(len(prefixes))]
+	n := r.Intn(8) + 3 // 3..10
+	const alpha = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alpha[r.Intn(len(alpha))]
+	}
+	return p + string(b)
+}
 
 // trafficCap 返回某流量档位下速率上限（bytes/s）
 func trafficCap(level string) float64 {
@@ -240,25 +283,17 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		}
 		uptimeDays = rnd(r, float64(lo), float64(hi))
 	}
-	// CPU 核心数
-	cpuCount := r.Intn(32) + 1
+	// CPU 核心数（仅 1 或偶数）
+	cpuCount := pickEvenOrOne(r, 1, 32)
 	if p.CpuCoresMin > 0 && p.CpuCoresMax > 0 {
-		lo, hi := p.CpuCoresMin, p.CpuCoresMax
-		if hi < lo {
-			lo, hi = hi, lo
-		}
-		cpuCount = r.Intn(hi-lo+1) + lo
+		cpuCount = pickEvenOrOne(r, p.CpuCoresMin, p.CpuCoresMax)
 	}
-	// 内存大小（GB）
-	memTotal := rnd(r, 1, 128)
+	// 内存大小（GB，整数，仅 1 或偶数）
+	memTotal := pickEvenOrOne(r, 1, 128)
 	if p.MemTotalMin > 0 && p.MemTotalMax > 0 {
-		lo, hi := p.MemTotalMin, p.MemTotalMax
-		if hi < lo {
-			lo, hi = hi, lo
-		}
-		memTotal = rnd(r, lo, hi)
+		memTotal = pickEvenOrOne(r, int(p.MemTotalMin), int(p.MemTotalMax))
 	}
-	// 硬盘大小（GB）
+	// 硬盘大小（GB，保持浮点随机）
 	diskTotal := rnd(r, 20, 2000)
 	if p.DiskTotalMin > 0 && p.DiskTotalMax > 0 {
 		lo, hi := p.DiskTotalMin, p.DiskTotalMax
@@ -270,7 +305,7 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 	a := stressAgent{
 		r:           r,
 		uuid:        newUUID(),
-		hostname:    fmt.Sprintf("host-%s", newUUID()[:8]),
+		hostname:    makeHostname(r),
 		ip:          varyIP(r, c.ip),
 		country:     c.name,
 		countryCode: c.code,
@@ -283,7 +318,7 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		online:      r.Float64() < p.OnlineRatio,
 	}
 	a.memPct = rnd(r, 10, 90)
-	a.memUsed = a.memTotal * a.memPct / 100
+	a.memUsed = float64(a.memTotal) * a.memPct / 100
 	a.diskUsed = a.diskTotal * rnd(r, 0.1, 0.85)
 	cap := trafficCap(p.TrafficLevel)
 	a.rxRate = rnd(r, 0, cap)
@@ -306,7 +341,7 @@ func buildReport(a *stressAgent, intervalSec float64) AgentReport {
 		CPU:       a.cpu,
 		CPUCount:  a.cpuCount,
 		MemUsed:   a.memUsed,
-		MemTotal:  a.memTotal,
+		MemTotal:  float64(a.memTotal),
 		DiskUsed:  a.diskUsed,
 		DiskTotal: a.diskTotal,
 		RxRate:    a.rxRate,
@@ -341,7 +376,7 @@ func (e *StressEngine) pushTick(a *stressAgent) {
 		}
 	}
 	a.memPct = clamp(a.memPct+rnd(a.r, -5, 5), mlo, mhi)
-	a.memUsed = a.memTotal * a.memPct / 100
+	a.memUsed = float64(a.memTotal) * a.memPct / 100
 	// 磁盘
 	a.diskUsed = clamp(a.diskUsed+rnd(a.r, -3, 3), a.diskTotal*0.05, a.diskTotal*0.95)
 	// 流量

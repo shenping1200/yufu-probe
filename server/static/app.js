@@ -233,7 +233,9 @@ const DISTRO_COLOR = {
 // 匹配到具体发行版用品牌色（避免单色全黑看不出是哪个发行版）；
 // 回退到通用 Linux 时用 currentColor 跟随主题文字色（深/浅主题自适应）。
 function distroIcon(platform, os, title) {
-  const key = (platform || os || '').toLowerCase();
+  // 先用 os（包含发行版名如 "Ubuntu 22.04"）匹配具体 logo；匹配不到再回退到 platform；
+  // 否则所有 Linux 都会被通用企鹅"抢答"覆盖
+  const key = (os || platform || '').toLowerCase();
   let name = 'linux';
   for (const [re, svg] of DISTRO_MAP) {
     if (re.test(key)) { name = svg; break; }
