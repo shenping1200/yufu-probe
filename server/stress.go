@@ -125,7 +125,7 @@ type stressAgent struct {
 	platform  string
 	cpuCount  int
 	memTotal  int     // GB（整数，仅 1 或偶数）
-	diskTotal float64 // GB
+	diskTotal int     // GB（整数，仅 10 的倍数）
 	uptime    int64
 	cpu       float64
 	memPct    float64
@@ -248,6 +248,25 @@ func pickMemGE(r *mrand.Rand, memLo, memHi, minVal int) int {
 	return k * 2
 }
 
+// pickMultipleOf10 在 [lo, hi] 内随机返回一个 10 的倍数（整数 GB）。
+// VPS 硬盘规格通常以 10/20/30/... 标称，避免出现 47.3GB 这类不真实的随机值。
+func pickMultipleOf10(r *mrand.Rand, lo, hi int) int {
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if lo < 10 {
+		lo = 10
+	}
+	// 上下界对齐到 10 的倍数
+	start := ((lo + 9) / 10) * 10
+	end := (hi / 10) * 10
+	if start > end {
+		return start
+	}
+	n := (end - start) / 10
+	return start + r.Intn(n+1)*10
+}
+
 // makeHostname 生成多样化主机名（避免全是 host-XXXXXXXX 风格）：
 // 多种前缀 + 小写字母数字混合后缀，长度 3–10 不等，模拟真实 VPS 命名习惯
 func makeHostname(r *mrand.Rand) string {
@@ -337,14 +356,10 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		memLo, memHi = int(p.MemTotalMin), int(p.MemTotalMax)
 	}
 	memTotal := pickMemGE(r, memLo, memHi, cpuCount)
-	// 硬盘大小（GB，保持浮点随机）
-	diskTotal := rnd(r, 20, 2000)
+	// 硬盘大小（GB，整数，仅 10 的倍数）
+	diskTotal := pickMultipleOf10(r, 20, 2000)
 	if p.DiskTotalMin > 0 && p.DiskTotalMax > 0 {
-		lo, hi := p.DiskTotalMin, p.DiskTotalMax
-		if hi < lo {
-			lo, hi = hi, lo
-		}
-		diskTotal = rnd(r, lo, hi)
+		diskTotal = pickMultipleOf10(r, int(p.DiskTotalMin), int(p.DiskTotalMax))
 	}
 	a := stressAgent{
 		r:           r,
@@ -363,7 +378,7 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 	}
 	a.memPct = rnd(r, 10, 90)
 	a.memUsed = float64(a.memTotal) * a.memPct / 100
-	a.diskUsed = a.diskTotal * rnd(r, 0.1, 0.85)
+	a.diskUsed = float64(a.diskTotal) * rnd(r, 0.1, 0.85)
 	cap := trafficCap(p.TrafficLevel)
 	a.rxRate = rnd(r, 0, cap)
 	a.txRate = rnd(r, 0, cap)
@@ -387,7 +402,7 @@ func buildReport(a *stressAgent, intervalSec float64) AgentReport {
 		MemUsed:   a.memUsed,
 		MemTotal:  float64(a.memTotal),
 		DiskUsed:  a.diskUsed,
-		DiskTotal: a.diskTotal,
+		DiskTotal: float64(a.diskTotal),
 		RxRate:    a.rxRate,
 		TxRate:    a.txRate,
 		RxDelta:   a.rxRate * intervalSec,
@@ -396,7 +411,8 @@ func buildReport(a *stressAgent, intervalSec float64) AgentReport {
 }
 
 func (e *StressEngine) pushInitial(a *stressAgent) {
-	live.ApplyReport(buildReport(a, e.interval.Seconds()), a.country, a.countryCode)
+	// 用 Ephemeral：压测机只活在内存，不入库，服务重启后不会从 DB 复活成孤儿
+	live.ApplyReportEphemeral(buildReport(a, e.interval.Seconds()), a.country, a.countryCode)
 }
 
 func (e *StressEngine) pushTick(a *stressAgent) {
@@ -422,12 +438,13 @@ func (e *StressEngine) pushTick(a *stressAgent) {
 	a.memPct = clamp(a.memPct+rnd(a.r, -5, 5), mlo, mhi)
 	a.memUsed = float64(a.memTotal) * a.memPct / 100
 	// 磁盘
-	a.diskUsed = clamp(a.diskUsed+rnd(a.r, -3, 3), a.diskTotal*0.05, a.diskTotal*0.95)
+	a.diskUsed = clamp(a.diskUsed+rnd(a.r, -3, 3), float64(a.diskTotal)*0.05, float64(a.diskTotal)*0.95)
 	// 流量
 	cap := trafficCap(p.TrafficLevel)
 	a.rxRate = clamp(a.rxRate+rnd(a.r, -cap*0.2, cap*0.2), 0, cap*1.2)
 	a.txRate = clamp(a.txRate+rnd(a.r, -cap*0.2, cap*0.2), 0, cap*1.2)
-	live.ApplyReport(buildReport(a, e.interval.Seconds()), a.country, a.countryCode)
+	// 同 pushInitial：用 Ephemeral，只入内存不入库
+	live.ApplyReportEphemeral(buildReport(a, e.interval.Seconds()), a.country, a.countryCode)
 }
 
 // Start 启动压测；db/hub 用于停止时清理与广播
@@ -475,9 +492,9 @@ func (e *StressEngine) Start(p StressParams, db *sql.DB, hub *Hub) error {
 	for i := range e.agents {
 		e.pushInitial(&e.agents[i])
 	}
-	// 分组打标（内存态，立即生效）
+	// 分组打标（内存态，立即生效；用 Ephemeral 不标记 dirty，保持不入库）
 	for i := range e.agents {
-		live.UpdateAdmin(e.agents[i].uuid, "", "", group, nil)
+		live.UpdateAdminEphemeral(e.agents[i].uuid, "", "", group, nil)
 	}
 	live.AddGroup(group)
 	if hub != nil {

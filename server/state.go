@@ -73,6 +73,17 @@ func (s *ServerState) LoadFromDB(db *sql.DB, month string) {
 
 // ApplyReport 处理一条上报：原地更新内存、累加流量、标记脏数据，全程不碰 DB、不广播
 func (s *ServerState) ApplyReport(rep AgentReport, country, countryCode string) {
+	s.applyReport(rep, country, countryCode, true)
+}
+
+// ApplyReportEphemeral 与 ApplyReport 行为一致，但不标记脏、不累加流量——
+// 数据只活在内存，Flush 不会入库。专用于压测引擎：让模拟机随进程消亡，
+// 避免服务重启后从 SQLite 复活成"孤儿"，导致停止按钮清理不掉。
+func (s *ServerState) ApplyReportEphemeral(rep AgentReport, country, countryCode string) {
+	s.applyReport(rep, country, countryCode, false)
+}
+
+func (s *ServerState) applyReport(rep AgentReport, country, countryCode string, persist bool) {
 	now := time.Now().Unix()
 	s.mu.Lock()
 	cur, ok := s.agents[rep.UUID]
@@ -118,20 +129,24 @@ func (s *ServerState) ApplyReport(rep AgentReport, country, countryCode string) 
 	if countryCode != "" {
 		cur.CountryCode = countryCode
 	}
-	if rep.RxDelta > 0 {
-		cur.RxMonth += rep.RxDelta
-		d := s.traffic[rep.UUID]
-		d.rx += rep.RxDelta
-		s.traffic[rep.UUID] = d
-	}
-	if rep.TxDelta > 0 {
-		cur.TxMonth += rep.TxDelta
-		d := s.traffic[rep.UUID]
-		d.tx += rep.TxDelta
-		s.traffic[rep.UUID] = d
+	if persist {
+		if rep.RxDelta > 0 {
+			cur.RxMonth += rep.RxDelta
+			d := s.traffic[rep.UUID]
+			d.rx += rep.RxDelta
+			s.traffic[rep.UUID] = d
+		}
+		if rep.TxDelta > 0 {
+			cur.TxMonth += rep.TxDelta
+			d := s.traffic[rep.UUID]
+			d.tx += rep.TxDelta
+			s.traffic[rep.UUID] = d
+		}
 	}
 	s.agents[rep.UUID] = cur
-	s.dirty[rep.UUID] = true
+	if persist {
+		s.dirty[rep.UUID] = true
+	}
 	s.mu.Unlock()
 }
 
@@ -168,6 +183,16 @@ func (s *ServerState) SetOffline(threshold int64) {
 
 // UpdateAdmin 更新管理员字段（别名/备注/分组/到期），同步内存
 func (s *ServerState) UpdateAdmin(uuid, alias, remark, group string, expireAt *int64) {
+	s.updateAdmin(uuid, alias, remark, group, expireAt, true)
+}
+
+// UpdateAdminEphemeral 与 UpdateAdmin 行为一致，但不标记 dirty——
+// 用于压测引擎给模拟机打分组，避免 Flush 把它们写入 SQLite。
+func (s *ServerState) UpdateAdminEphemeral(uuid, alias, remark, group string, expireAt *int64) {
+	s.updateAdmin(uuid, alias, remark, group, expireAt, false)
+}
+
+func (s *ServerState) updateAdmin(uuid, alias, remark, group string, expireAt *int64, persist bool) {
 	s.mu.Lock()
 	a, ok := s.agents[uuid]
 	if !ok {
@@ -180,7 +205,9 @@ func (s *ServerState) UpdateAdmin(uuid, alias, remark, group string, expireAt *i
 	a.Remark = remark
 	a.Group = group
 	a.ExpireAt = expireAt
-	s.dirty[uuid] = true
+	if persist {
+		s.dirty[uuid] = true
+	}
 	s.mu.Unlock()
 }
 

@@ -139,6 +139,12 @@ function fmtBytes(b) {
   do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
   return n.toFixed(2) + ' ' + u[i];
 }
+// 容量显示（GB 入参，直接显示为 "x.x GB"，自动去掉无意义的尾零；
+// 4 → "4 GB"，17.53 → "17.5 GB"，0.96 → "1 GB"）
+function fmtSize(v) {
+  if (v == null || v < 0) return '-';
+  return parseFloat(v.toFixed(1)) + ' GB';
+}
 function fmtRate(bps) {
   if (!bps || bps < 0) return '0 B/s';
   if (bps < 1024) return bps.toFixed(0) + ' B/s';
@@ -284,8 +290,8 @@ function percent(used, total) {
 }
 function fmtConfig(a) {
   const cores = a.cpu_count ? a.cpu_count + '核' : '-';
-  const mem = a.mem_total ? fmtBytes(a.mem_total * 1e9) : '-';
-  const disk = a.disk_total ? fmtBytes(a.disk_total * 1e9) : '-';
+  const mem = a.mem_total ? fmtSize(a.mem_total) : '-';
+  const disk = a.disk_total ? fmtSize(a.disk_total) : '-';
   return `${cores} / ${mem}内存 / ${disk}磁盘`;
 }
 
@@ -540,11 +546,11 @@ function cardHTML(a) {
           <div class="metric-bar"><div class="bar-cpu" style="width:${percent(a.cpu, 100)}%"></div></div>
         </div>
         <div class="metric">
-          <div class="metric-label">内存 ${fmtBytes(a.mem_used * 1e9)} / ${fmtBytes(a.mem_total * 1e9)}</div>
+          <div class="metric-label">内存 ${fmtSize(a.mem_used)} / ${fmtSize(a.mem_total)}</div>
           <div class="metric-bar"><div class="bar-mem" style="width:${percent(a.mem_used, a.mem_total)}%"></div></div>
         </div>
         <div class="metric">
-          <div class="metric-label">磁盘 ${fmtBytes(a.disk_used * 1e9)} / ${fmtBytes(a.disk_total * 1e9)}</div>
+          <div class="metric-label">磁盘 ${fmtSize(a.disk_used)} / ${fmtSize(a.disk_total)}</div>
           <div class="metric-bar"><div class="bar-disk" style="width:${percent(a.disk_used, a.disk_total)}%"></div></div>
         </div>
         <div class="metric">
