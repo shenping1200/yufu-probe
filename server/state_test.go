@@ -84,3 +84,33 @@ func TestCleanupStale(t *testing.T) {
 		t.Fatalf("在线机被误删")
 	}
 }
+
+// TestApplyReportEphemeralTraffic 验证压测机（ephemeral）的本月流量在内存中累加，
+// 让面板每行「本月流量」和顶部月度聚合能反映压测流量（更真实）；同时确认
+// s.traffic 与 s.dirty 不被污染——ephemeral 仍不入库、不落盘，保持"内存临时态"。
+func TestApplyReportEphemeralTraffic(t *testing.T) {
+	s := NewServerState()
+	rep := AgentReport{UUID: "ephemeral-1", RxDelta: 1024, TxDelta: 2048}
+	s.ApplyReportEphemeral(rep, "", "")
+	if got := s.agents["ephemeral-1"].RxMonth; got != 1024 {
+		t.Fatalf("ephemeral RxMonth 应累加 1024，实际 %v", got)
+	}
+	if got := s.agents["ephemeral-1"].TxMonth; got != 2048 {
+		t.Fatalf("ephemeral TxMonth 应累加 2048，实际 %v", got)
+	}
+	if _, ok := s.traffic["ephemeral-1"]; ok {
+		t.Fatalf("ephemeral 不应写入 s.traffic（避免落库）")
+	}
+	if _, ok := s.dirty["ephemeral-1"]; ok {
+		t.Fatalf("ephemeral 不应被标记 dirty")
+	}
+
+	// 连续上报 RxDelta/TxDelta>0 时应继续累加
+	s.ApplyReportEphemeral(AgentReport{UUID: "ephemeral-1", RxDelta: 512, TxDelta: 256}, "", "")
+	if got := s.agents["ephemeral-1"].RxMonth; got != 1024+512 {
+		t.Fatalf("第二次上报 RxMonth 累加错误：%v", got)
+	}
+	if got := s.agents["ephemeral-1"].TxMonth; got != 2048+256 {
+		t.Fatalf("第二次上报 TxMonth 累加错误：%v", got)
+	}
+}

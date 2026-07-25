@@ -170,15 +170,23 @@ func (s *ServerState) applyReport(rep AgentReport, country, countryCode string, 
 	if countryCode != "" {
 		cur.CountryCode = countryCode
 	}
+	// 月累计流量：无论 ephemeral 还是持久化都在内存里累加，
+	// 让压测机的「本月流量」与顶部月度聚合能看到累计值（更真实）。
+	// 写库用的 delta 桶 s.traffic 仅 persist 时累积，ephemeral 不入库，
+	// 停止/重启即随内存一起清零，保持"内存临时态"语义。
+	if rep.RxDelta > 0 {
+		cur.RxMonth += rep.RxDelta
+	}
+	if rep.TxDelta > 0 {
+		cur.TxMonth += rep.TxDelta
+	}
 	if persist {
 		if rep.RxDelta > 0 {
-			cur.RxMonth += rep.RxDelta
 			d := s.traffic[rep.UUID]
 			d.rx += rep.RxDelta
 			s.traffic[rep.UUID] = d
 		}
 		if rep.TxDelta > 0 {
-			cur.TxMonth += rep.TxDelta
 			d := s.traffic[rep.UUID]
 			d.tx += rep.TxDelta
 			s.traffic[rep.UUID] = d
