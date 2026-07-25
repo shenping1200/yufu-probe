@@ -68,11 +68,11 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .subtitle { font-size: 13px; color: var(--text-2); }
 .brand-logo { width: 38px; height: 38px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
 .header-right { display: flex; align-items: center; gap: 14px; font-size: 14px; }
-#themeBtn, #logoutBtn {
+#stressBtn, #themeBtn, #logoutBtn {
   padding: 8px 14px; border: 1px solid var(--border); background: var(--bg-3);
   color: var(--text); border-radius: 8px; cursor: pointer; font-size: 13px;
 }
-#themeBtn:hover, #logoutBtn:hover { border-color: var(--primary); }
+#stressBtn:hover, #themeBtn:hover, #logoutBtn:hover { border-color: var(--primary); }
 .view-toggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .view-toggle button {
   padding: 8px 14px; border: none; background: var(--bg-2); color: var(--text-2);
@@ -436,8 +436,10 @@ body.light .modal-box input[type=date] { color-scheme: light; }
 .term-status.err { color: var(--danger); }
 
 /* ---------- 压力测试弹窗 ---------- */
-.stress-box { width: 560px; max-width: 94vw; }
-.stress-form { display: flex; flex-direction: column; gap: 12px; margin: 6px 0 4px; }
+.stress-box { width: 560px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+.stress-box > p { flex: none; }
+.stress-form { display: flex; flex-direction: column; gap: 12px; margin: 0; overflow-y: auto; flex: 1 1 auto; min-height: 0; padding-right: 4px; }
+.sf-status, .modal-actions { flex: none; }
 .sf-row { display: flex; flex-direction: column; gap: 6px; }
 .sf-row.sf-two { flex-direction: row; gap: 14px; }
 .sf-row.sf-two > div { flex: 1; display: flex; flex-direction: column; gap: 6px; }
