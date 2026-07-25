@@ -499,7 +499,7 @@ func stressStartHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "group": p.Group, "count": p.Count, "offline_count": p.OfflineCount})
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "group": p.Group, "count": p.Count})
 	}
 }
 

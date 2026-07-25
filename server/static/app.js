@@ -911,6 +911,7 @@ let sfTimer = null;
 document.getElementById('stressBtn').onclick = async () => {
   document.getElementById('stressModal').classList.remove('hidden');
   await loadStressOptions();
+  applyStressPrefs();
   refreshStressStatus();
 };
 document.getElementById('sfClose').onclick = () => document.getElementById('stressModal').classList.add('hidden');
@@ -944,6 +945,7 @@ async function loadStressOptions() {
     (d.countries || []).forEach(c => {
       const el = document.createElement('span');
       el.className = 'chip';
+      el.dataset.code = c.code;
       el.textContent = c.name;
       el.onclick = () => {
         if (el.classList.contains('on')) { el.classList.remove('on'); sfCountriesSel.delete(c.code); }
@@ -957,6 +959,7 @@ async function loadStressOptions() {
     (d.oses || []).forEach(k => {
       const el = document.createElement('span');
       el.className = 'chip';
+      el.dataset.key = k;
       el.textContent = k;
       el.onclick = () => {
         if (el.classList.contains('on')) { el.classList.remove('on'); sfOsesSel.delete(k); }
@@ -976,11 +979,97 @@ function sfFlt(id, dflt) {
   return isNaN(v) ? dflt : v;
 }
 
+// ---------- 压测参数记忆（localStorage）----------
+// 每次「开始生成」后自动存下全部参数，下次打开弹窗自动回填，免去重复设置。
+const SF_PREFS_KEY = 'yufu_stress_prefs';
+function saveStressPrefs() {
+  const prefs = {
+    count: sfNum('sfCount', 2000),
+    duration: sfNum('sfDuration', 0),
+    online: sfNum('sfOnline', 100),
+    traffic: document.getElementById('sfTraffic').value,
+    group: document.getElementById('sfGroup').value,
+    countryRand: document.getElementById('sfCountryRand').checked,
+    osRand: document.getElementById('sfOsRand').checked,
+    countries: Array.from(sfCountriesSel),
+    oses: Array.from(sfOsesSel),
+    uptimeRand: document.getElementById('sfUptimeRand').checked,
+    uptimeMin: sfNum('sfUptimeMin', 0),
+    uptimeMax: sfNum('sfUptimeMax', 0),
+    cpuRand: document.getElementById('sfCpuRand').checked,
+    cpuMin: sfFlt('sfCpuMin', 0),
+    cpuMax: sfFlt('sfCpuMax', 0),
+    memRand: document.getElementById('sfMemRand').checked,
+    memMin: sfFlt('sfMemMin', 0),
+    memMax: sfFlt('sfMemMax', 0),
+    cpuCoresRand: document.getElementById('sfCpuCoresRand').checked,
+    cpuCoresMin: sfNum('sfCpuCoresMin', 0),
+    cpuCoresMax: sfNum('sfCpuCoresMax', 0),
+    memTotalRand: document.getElementById('sfMemTotalRand').checked,
+    memTotalMin: sfFlt('sfMemTotalMin', 0),
+    memTotalMax: sfFlt('sfMemTotalMax', 0),
+    diskTotalRand: document.getElementById('sfDiskTotalRand').checked,
+    diskTotalMin: sfFlt('sfDiskTotalMin', 0),
+    diskTotalMax: sfFlt('sfDiskTotalMax', 0),
+  };
+  try { localStorage.setItem(SF_PREFS_KEY, JSON.stringify(prefs)); } catch (e) {}
+}
+function applyStressPrefs() {
+  let prefs;
+  try { prefs = JSON.parse(localStorage.getItem(SF_PREFS_KEY) || 'null'); } catch (e) { return; }
+  if (!prefs) return;
+  const setVal = (id, v) => { if (v !== undefined && v !== null) { const el = document.getElementById(id); if (el) el.value = v; } };
+  const setChk = (id, v) => { if (typeof v === 'boolean') { const el = document.getElementById(id); if (el) el.checked = v; } };
+  setVal('sfCount', prefs.count);
+  setVal('sfDuration', prefs.duration);
+  setVal('sfOnline', prefs.online);
+  setVal('sfTraffic', prefs.traffic);
+  setVal('sfGroup', prefs.group);
+  setChk('sfCountryRand', prefs.countryRand);
+  setChk('sfOsRand', prefs.osRand);
+  setChk('sfUptimeRand', prefs.uptimeRand);
+  setVal('sfUptimeMin', prefs.uptimeMin);
+  setVal('sfUptimeMax', prefs.uptimeMax);
+  setChk('sfCpuRand', prefs.cpuRand);
+  setVal('sfCpuMin', prefs.cpuMin);
+  setVal('sfCpuMax', prefs.cpuMax);
+  setChk('sfMemRand', prefs.memRand);
+  setVal('sfMemMin', prefs.memMin);
+  setVal('sfMemMax', prefs.memMax);
+  setChk('sfCpuCoresRand', prefs.cpuCoresRand);
+  setVal('sfCpuCoresMin', prefs.cpuCoresMin);
+  setVal('sfCpuCoresMax', prefs.cpuCoresMax);
+  setChk('sfMemTotalRand', prefs.memTotalRand);
+  setVal('sfMemTotalMin', prefs.memTotalMin);
+  setVal('sfMemTotalMax', prefs.memTotalMax);
+  setChk('sfDiskTotalRand', prefs.diskTotalRand);
+  setVal('sfDiskTotalMin', prefs.diskTotalMin);
+  setVal('sfDiskTotalMax', prefs.diskTotalMax);
+  // 触发「随机」勾选的 disabled 联动，使手动输入框按记忆启用/禁用
+  Object.keys(sfRandMap).forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.dispatchEvent(new Event('change'));
+  });
+  // 恢复已选国家/系统 chips
+  if (Array.isArray(prefs.countries)) {
+    sfCountriesSel = new Set(prefs.countries);
+    document.querySelectorAll('#sfCountries .chip').forEach(el => {
+      if (sfCountriesSel.has(el.dataset.code)) el.classList.add('on');
+    });
+  }
+  if (Array.isArray(prefs.oses)) {
+    sfOsesSel = new Set(prefs.oses);
+    document.querySelectorAll('#sfOses .chip').forEach(el => {
+      if (sfOsesSel.has(el.dataset.key)) el.classList.add('on');
+    });
+  }
+}
+
 document.getElementById('sfStart').onclick = async () => {
   const p = {
     count: sfNum('sfCount', 2000),
     duration_sec: sfNum('sfDuration', 0),
-    offline_count: sfNum('sfOffline', 0),
+    online_ratio: sfNum('sfOnline', 100) / 100,
     traffic_level: document.getElementById('sfTraffic').value,
     group: document.getElementById('sfGroup').value.trim() || '干活的',
     countries: document.getElementById('sfCountryRand').checked ? [] : Array.from(sfCountriesSel),
@@ -998,6 +1087,7 @@ document.getElementById('sfStart').onclick = async () => {
     disk_total_min: document.getElementById('sfDiskTotalRand').checked ? 0 : sfFlt('sfDiskTotalMin', 0),
     disk_total_max: document.getElementById('sfDiskTotalRand').checked ? 0 : sfFlt('sfDiskTotalMax', 0),
   };
+  saveStressPrefs();
   const btn = document.getElementById('sfStart');
   btn.disabled = true;
   try {
@@ -1045,7 +1135,7 @@ function refreshStressStatus() {
       const startBtn = document.getElementById('sfStart');
       if (s.running) {
         box.classList.remove('hidden');
-        box.innerHTML = `运行中：分组「${escapeHtml(s.group || '')}」 共 <b>${s.total}</b> 台，在线 <b>${s.online}</b> 台，离线 <b>${s.offline || 0}</b> 台，已运行 ${s.elapsedSec}s`;
+        box.innerHTML = `运行中：分组「${escapeHtml(s.group || '')}」 共 <b>${s.total}</b> 台，在线 <b>${s.online}</b> 台，已运行 ${s.elapsedSec}s`;
         stopBtn.classList.remove('hidden');
         startBtn.classList.add('hidden');
       } else {

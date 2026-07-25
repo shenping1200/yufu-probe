@@ -100,7 +100,7 @@ type StressParams struct {
 	UptimeMin    int      `json:"uptime_min"`  // 天；0 = 随机
 	UptimeMax    int      `json:"uptime_max"`
 	TrafficLevel string   `json:"traffic_level"` // low/mid/high/random
-	OfflineCount int      `json:"offline_count"` // 离线机器数量（与在线同规则，仅 online=false）
+	OnlineRatio  float64  `json:"online_ratio"`  // 0..1，默认 1
 	CpuMin       float64  `json:"cpu_min"`       // %；0 = 随机
 	CpuMax       float64  `json:"cpu_max"`
 	MemMin       float64  `json:"mem_min"` // 使用率 %；0 = 随机
@@ -359,7 +359,7 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		memTotal:    memTotal,
 		diskTotal:   diskTotal,
 		uptime:      int64(uptimeDays) * 86400,
-		online:      true, // 在线/离线由 Start 的批次决定
+		online:      r.Float64() < p.OnlineRatio,
 	}
 	a.memPct = rnd(r, 10, 90)
 	a.memUsed = float64(a.memTotal) * a.memPct / 100
@@ -440,19 +440,14 @@ func (e *StressEngine) Start(p StressParams, db *sql.DB, hub *Hub) error {
 	if p.Count <= 0 {
 		p.Count = 2000
 	}
-	if p.OfflineCount < 0 {
-		p.OfflineCount = 0
-	}
-	// 总量上限 5000：优先保证在线数量，超出部分砍掉离线
-	if p.Count+p.OfflineCount > 5000 {
-		over := p.Count + p.OfflineCount - 5000
-		p.OfflineCount -= over
-		if p.OfflineCount < 0 {
-			p.OfflineCount = 0
-		}
-	}
 	if p.Count > 5000 {
 		p.Count = 5000
+	}
+	if p.OnlineRatio <= 0 {
+		p.OnlineRatio = 1
+	}
+	if p.OnlineRatio > 1 {
+		p.OnlineRatio = 1
 	}
 	group := p.Group
 	if group == "" {
@@ -465,18 +460,9 @@ func (e *StressEngine) Start(p StressParams, db *sql.DB, hub *Hub) error {
 	e.hub = hub
 	e.params = p
 	e.startTime = time.Now()
-	total := p.Count + p.OfflineCount
-	agents := make([]stressAgent, 0, total)
-	base := seed.Int64()
+	agents := make([]stressAgent, 0, p.Count)
 	for i := 0; i < p.Count; i++ {
-		a := makeAgent(mrand.New(mrand.NewSource(base+int64(i))), p)
-		a.online = true
-		agents = append(agents, a)
-	}
-	for i := 0; i < p.OfflineCount; i++ {
-		a := makeAgent(mrand.New(mrand.NewSource(base+int64(p.Count+i))), p)
-		a.online = false
-		agents = append(agents, a)
+		agents = append(agents, makeAgent(mrand.New(mrand.NewSource(seed.Int64()+int64(i))), p))
 	}
 	e.agents = agents
 
@@ -492,12 +478,6 @@ func (e *StressEngine) Start(p StressParams, db *sql.DB, hub *Hub) error {
 	// 分组打标（内存态，立即生效）
 	for i := range e.agents {
 		live.UpdateAdmin(e.agents[i].uuid, "", "", group, nil)
-	}
-	// 离线机：初始上报后立即置为离线，避免在前 15s 误显为在线
-	for i := range e.agents {
-		if !e.agents[i].online {
-			live.MarkOfflineNow(e.agents[i].uuid)
-		}
 	}
 	live.AddGroup(group)
 	if hub != nil {
@@ -593,15 +573,10 @@ func (e *StressEngine) Status() map[string]interface{} {
 	total := len(e.agents)
 	e.mu.Unlock()
 	online := 0
-	offline := 0
 	if running {
 		for _, a := range live.Snapshot() {
-			if a.Group == group {
-				if a.Online {
-					online++
-				} else {
-					offline++
-				}
+			if a.Group == group && a.Online {
+				online++
 			}
 		}
 	}
@@ -613,7 +588,6 @@ func (e *StressEngine) Status() map[string]interface{} {
 		"running":    running,
 		"total":      total,
 		"online":     online,
-		"offline":    offline,
 		"elapsedSec": elapsed,
 		"group":      group,
 	}

@@ -166,18 +166,6 @@ func (s *ServerState) SetOffline(threshold int64) {
 	s.mu.Unlock()
 }
 
-// MarkOfflineNow 立即将指定机器标记为离线（用于压测离线机：上报一次初始快照后
-// 立刻置离线，避免在前 15s 误显为在线；之后 runLoop 不再刷新它，稳定保持离线）。
-func (s *ServerState) MarkOfflineNow(uuid string) {
-	s.mu.Lock()
-	if a, ok := s.agents[uuid]; ok {
-		a.Online = false
-		a.LastSeen = 0
-		s.dirty[a.UUID] = true
-	}
-	s.mu.Unlock()
-}
-
 // UpdateAdmin 更新管理员字段（别名/备注/分组/到期），同步内存
 func (s *ServerState) UpdateAdmin(uuid, alias, remark, group string, expireAt *int64) {
 	s.mu.Lock()
