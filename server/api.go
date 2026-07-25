@@ -476,6 +476,51 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 	}
 }
 
+// ---------- 压力测试（内置引擎）----------
+
+func stressOptionsHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(StressOptions())
+	}
+}
+
+func stressStartHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var p StressParams
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if err := stressEngine.Start(p, db, hub); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "group": p.Group, "count": p.Count})
+	}
+}
+
+func stressStopHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := stressEngine.Stop(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}
+}
+
+func stressStatusHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(stressEngine.Status())
+	}
+}
+
 // viewerWSHandler 浏览器实时订阅（需登录 session）
 func viewerWSHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -526,6 +571,11 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/ws/terminal/{uuid}", requireLogin(db, terminalWSHandler(cfg, db, hub)))
 	// 手动解除 SSH 锁定（单台或全量）
 	r.HandleFunc("/api/ssh/unlock", requireLogin(db, unlockHandler(db))).Methods("POST")
+	// 压力测试（内置引擎）：选项 / 启动 / 停止 / 状态
+	r.HandleFunc("/api/stress/options", requireLogin(db, stressOptionsHandler(db))).Methods("GET")
+	r.HandleFunc("/api/stress/start", requireLogin(db, stressStartHandler(cfg, db, hub))).Methods("POST")
+	r.HandleFunc("/api/stress/stop", requireLogin(db, stressStopHandler(db, hub))).Methods("POST")
+	r.HandleFunc("/api/stress/status", requireLogin(db, stressStatusHandler())).Methods("GET")
 	r.PathPrefix("/").Handler(http.FileServer(http.FS(staticSubFS)))
 	return r
 }

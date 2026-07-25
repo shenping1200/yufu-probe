@@ -25,6 +25,7 @@
       <span class="subtitle">实时服务器状态</span>
     </div>
     <div class="header-right">
+      <button id="stressBtn" title="生成一批模拟机器用于压测/演示" class="primary">⚡ 压力测试</button>
       <button id="installCmdBtn" title="生成并复制 Linux 客户端一键安装命令" class="primary">📋 生成安装命令</button>
       <div class="view-toggle" id="viewToggle">
         <button data-mode="card" title="卡片视图">卡片</button>
@@ -131,6 +132,81 @@
         <button id="termClose">关闭</button>
       </div>
       <div id="term"></div>
+    </div>
+  </div>
+
+  <div id="stressModal" class="modal hidden">
+    <div class="modal-box stress-box">
+      <h3>⚡ 压力测试（虚拟机器）</h3>
+      <p style="color:var(--text-2);font-size:13px;margin:-4px 0 10px">在服务端生成一批模拟机器，看着像真机器。测试完点「停止并清除」即可一键移除，且绝不影响真实机器。</p>
+      <div class="stress-form">
+        <div class="sf-row">
+          <label>数量</label>
+          <input id="sfCount" type="number" min="1" max="5000" value="2000">
+        </div>
+        <div class="sf-row">
+          <label>国家/地区 <span class="sf-rand"><input type="checkbox" id="sfCountryRand" checked> 随机</span></label>
+          <div id="sfCountries" class="sf-chips"></div>
+        </div>
+        <div class="sf-row">
+          <label>操作系统 <span class="sf-rand"><input type="checkbox" id="sfOsRand" checked> 随机</span></label>
+          <div id="sfOses" class="sf-chips"></div>
+        </div>
+        <div class="sf-row sf-two">
+          <div>
+            <label>运行时长(分钟) <span style="color:var(--text-2)">0=手动停</span></label>
+            <input id="sfDuration" type="number" min="0" value="0">
+          </div>
+          <div>
+            <label>在线率(%)</label>
+            <input id="sfOnline" type="number" min="0" max="100" value="100">
+          </div>
+        </div>
+        <div class="sf-row sf-two">
+          <div>
+            <label>模拟开机年龄(天) <span class="sf-rand"><input type="checkbox" id="sfUptimeRand" checked> 随机</span></label>
+            <div style="display:flex;gap:6px">
+              <input id="sfUptimeMin" type="number" min="1" placeholder="最小" disabled>
+              <input id="sfUptimeMax" type="number" min="1" placeholder="最大" disabled>
+            </div>
+          </div>
+          <div>
+            <label>流量档位</label>
+            <select id="sfTraffic">
+              <option value="random" selected>随机</option>
+              <option value="low">低</option>
+              <option value="mid">中</option>
+              <option value="high">高</option>
+            </select>
+          </div>
+        </div>
+        <div class="sf-row sf-two">
+          <div>
+            <label>CPU 区间(%) <span class="sf-rand"><input type="checkbox" id="sfCpuRand" checked> 随机</span></label>
+            <div style="display:flex;gap:6px">
+              <input id="sfCpuMin" type="number" min="0" max="100" placeholder="最小" disabled>
+              <input id="sfCpuMax" type="number" min="0" max="100" placeholder="最大" disabled>
+            </div>
+          </div>
+          <div>
+            <label>内存使用率区间(%) <span class="sf-rand"><input type="checkbox" id="sfMemRand" checked> 随机</span></label>
+            <div style="display:flex;gap:6px">
+              <input id="sfMemMin" type="number" min="0" max="100" placeholder="最小" disabled>
+              <input id="sfMemMax" type="number" min="0" max="100" placeholder="最大" disabled>
+            </div>
+          </div>
+        </div>
+        <div class="sf-row">
+          <label>分组名</label>
+          <input id="sfGroup" placeholder="干活的" value="干活的">
+        </div>
+      </div>
+      <div id="sfStatus" class="sf-status hidden"></div>
+      <div class="modal-actions">
+        <button id="sfStop" class="danger hidden">停止并清除</button>
+        <button id="sfStart" class="primary">开始生成</button>
+        <button id="sfClose">关闭</button>
+      </div>
     </div>
   </div>
 </div>

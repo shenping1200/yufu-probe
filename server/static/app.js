@@ -900,4 +900,160 @@ document.getElementById('termModal').addEventListener('click', e => {
   if (e.target.id === 'termModal') closeTerminal(0);
 });
 
+// ---------- 压力测试（虚拟机器）----------
+let sfCountriesSel = new Set();
+let sfOsesSel = new Set();
+let sfTimer = null;
+
+document.getElementById('stressBtn').onclick = async () => {
+  document.getElementById('stressModal').classList.remove('hidden');
+  await loadStressOptions();
+  refreshStressStatus();
+};
+document.getElementById('sfClose').onclick = () => document.getElementById('stressModal').classList.add('hidden');
+document.getElementById('stressModal').addEventListener('click', e => {
+  if (e.target.id === 'stressModal') document.getElementById('stressModal').classList.add('hidden');
+});
+
+// 「随机」勾选时禁用对应的手动输入框
+const sfRandMap = {
+  sfUptimeRand: ['sfUptimeMin', 'sfUptimeMax'],
+  sfCpuRand: ['sfCpuMin', 'sfCpuMax'],
+  sfMemRand: ['sfMemMin', 'sfMemMax'],
+};
+Object.keys(sfRandMap).forEach(id => {
+  document.getElementById(id).addEventListener('change', e => {
+    sfRandMap[id].forEach(iid => { document.getElementById(iid).disabled = e.target.checked; });
+  });
+});
+
+async function loadStressOptions() {
+  try {
+    const r = await fetch('/api/stress/options');
+    if (!r.ok) return;
+    const d = await r.json();
+    const cc = document.getElementById('sfCountries');
+    cc.innerHTML = '';
+    sfCountriesSel.clear();
+    (d.countries || []).forEach(c => {
+      const el = document.createElement('span');
+      el.className = 'chip';
+      el.textContent = c.name;
+      el.onclick = () => {
+        if (el.classList.contains('on')) { el.classList.remove('on'); sfCountriesSel.delete(c.code); }
+        else { el.classList.add('on'); sfCountriesSel.add(c.code); }
+      };
+      cc.appendChild(el);
+    });
+    const oc = document.getElementById('sfOses');
+    oc.innerHTML = '';
+    sfOsesSel.clear();
+    (d.oses || []).forEach(k => {
+      const el = document.createElement('span');
+      el.className = 'chip';
+      el.textContent = k;
+      el.onclick = () => {
+        if (el.classList.contains('on')) { el.classList.remove('on'); sfOsesSel.delete(k); }
+        else { el.classList.add('on'); sfOsesSel.add(k); }
+      };
+      oc.appendChild(el);
+    });
+  } catch (e) {}
+}
+
+function sfNum(id, dflt) {
+  const v = parseInt(document.getElementById(id).value, 10);
+  return isNaN(v) ? dflt : v;
+}
+function sfFlt(id, dflt) {
+  const v = parseFloat(document.getElementById(id).value);
+  return isNaN(v) ? dflt : v;
+}
+
+document.getElementById('sfStart').onclick = async () => {
+  const p = {
+    count: sfNum('sfCount', 2000),
+    duration_sec: sfNum('sfDuration', 0),
+    online_ratio: sfNum('sfOnline', 100) / 100,
+    traffic_level: document.getElementById('sfTraffic').value,
+    group: document.getElementById('sfGroup').value.trim() || '干活的',
+    countries: document.getElementById('sfCountryRand').checked ? [] : Array.from(sfCountriesSel),
+    oses: document.getElementById('sfOsRand').checked ? [] : Array.from(sfOsesSel),
+    uptime_min: document.getElementById('sfUptimeRand').checked ? 0 : sfNum('sfUptimeMin', 0),
+    uptime_max: document.getElementById('sfUptimeRand').checked ? 0 : sfNum('sfUptimeMax', 0),
+    cpu_min: document.getElementById('sfCpuRand').checked ? 0 : sfFlt('sfCpuMin', 0),
+    cpu_max: document.getElementById('sfCpuRand').checked ? 0 : sfFlt('sfCpuMax', 0),
+    mem_min: document.getElementById('sfMemRand').checked ? 0 : sfFlt('sfMemMin', 0),
+    mem_max: document.getElementById('sfMemRand').checked ? 0 : sfFlt('sfMemMax', 0),
+  };
+  const btn = document.getElementById('sfStart');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/stress/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(p),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert('启动失败：' + (d.error || ('HTTP ' + r.status)));
+    } else {
+      document.getElementById('sfStatus').dataset.wasRunning = '1';
+    }
+  } catch (e) {
+    alert('启动失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    refreshStressStatus();
+  }
+};
+
+document.getElementById('sfStop').onclick = async () => {
+  const btn = document.getElementById('sfStop');
+  btn.disabled = true;
+  try {
+    await fetch('/api/stress/stop', { method: 'POST' });
+  } catch (e) {}
+  finally {
+    btn.disabled = false;
+    refreshStressStatus();
+  }
+};
+
+function refreshStressStatus() {
+  if (sfTimer) { clearTimeout(sfTimer); sfTimer = null; }
+  const modalHidden = document.getElementById('stressModal').classList.contains('hidden');
+  if (modalHidden) return;
+  fetch('/api/stress/status')
+    .then(r => r.ok ? r.json() : null)
+    .then(s => {
+      if (!s) return;
+      const box = document.getElementById('sfStatus');
+      const stopBtn = document.getElementById('sfStop');
+      const startBtn = document.getElementById('sfStart');
+      if (s.running) {
+        box.classList.remove('hidden');
+        box.innerHTML = `运行中：分组「${escapeHtml(s.group || '')}」 共 <b>${s.total}</b> 台，在线 <b>${s.online}</b> 台，已运行 ${s.elapsedSec}s`;
+        stopBtn.classList.remove('hidden');
+        startBtn.classList.add('hidden');
+      } else {
+        stopBtn.classList.add('hidden');
+        startBtn.classList.remove('hidden');
+        if (box.dataset.wasRunning === '1') {
+          box.classList.remove('hidden');
+          box.innerHTML = '已停止并清除完毕。';
+        } else {
+          box.classList.add('hidden');
+        }
+      }
+      box.dataset.wasRunning = s.running ? '1' : '0';
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (!document.getElementById('stressModal').classList.contains('hidden')) {
+        sfTimer = setTimeout(refreshStressStatus, 2000);
+      }
+    });
+}
+
 checkLogin();
