@@ -182,6 +182,29 @@
         </div>
         <div class="sf-row sf-two">
           <div>
+            <label>CPU 核心数 <span class="sf-rand"><input type="checkbox" id="sfCpuCoresRand" checked> 随机</span></label>
+            <div style="display:flex;gap:6px">
+              <input id="sfCpuCoresMin" type="number" min="1" placeholder="最小" disabled>
+              <input id="sfCpuCoresMax" type="number" min="1" placeholder="最大" disabled>
+            </div>
+          </div>
+          <div>
+            <label>内存大小(GB) <span class="sf-rand"><input type="checkbox" id="sfMemTotalRand" checked> 随机</span></label>
+            <div style="display:flex;gap:6px">
+              <input id="sfMemTotalMin" type="number" min="1" placeholder="最小" disabled>
+              <input id="sfMemTotalMax" type="number" min="1" placeholder="最大" disabled>
+            </div>
+          </div>
+        </div>
+        <div class="sf-row">
+          <label>硬盘大小(GB) <span class="sf-rand"><input type="checkbox" id="sfDiskTotalRand" checked> 随机</span></label>
+          <div style="display:flex;gap:6px">
+            <input id="sfDiskTotalMin" type="number" min="1" placeholder="最小" disabled>
+            <input id="sfDiskTotalMax" type="number" min="1" placeholder="最大" disabled>
+          </div>
+        </div>
+        <div class="sf-row sf-two">
+          <div>
             <label>CPU 区间(%) <span class="sf-rand"><input type="checkbox" id="sfCpuRand" checked> 随机</span></label>
             <div style="display:flex;gap:6px">
               <input id="sfCpuMin" type="number" min="0" max="100" placeholder="最小" disabled>

@@ -920,6 +920,9 @@ const sfRandMap = {
   sfUptimeRand: ['sfUptimeMin', 'sfUptimeMax'],
   sfCpuRand: ['sfCpuMin', 'sfCpuMax'],
   sfMemRand: ['sfMemMin', 'sfMemMax'],
+  sfCpuCoresRand: ['sfCpuCoresMin', 'sfCpuCoresMax'],
+  sfMemTotalRand: ['sfMemTotalMin', 'sfMemTotalMax'],
+  sfDiskTotalRand: ['sfDiskTotalMin', 'sfDiskTotalMax'],
 };
 Object.keys(sfRandMap).forEach(id => {
   document.getElementById(id).addEventListener('change', e => {
@@ -985,6 +988,12 @@ document.getElementById('sfStart').onclick = async () => {
     cpu_max: document.getElementById('sfCpuRand').checked ? 0 : sfFlt('sfCpuMax', 0),
     mem_min: document.getElementById('sfMemRand').checked ? 0 : sfFlt('sfMemMin', 0),
     mem_max: document.getElementById('sfMemRand').checked ? 0 : sfFlt('sfMemMax', 0),
+    cpu_cores_min: document.getElementById('sfCpuCoresRand').checked ? 0 : sfNum('sfCpuCoresMin', 0),
+    cpu_cores_max: document.getElementById('sfCpuCoresRand').checked ? 0 : sfNum('sfCpuCoresMax', 0),
+    mem_total_min: document.getElementById('sfMemTotalRand').checked ? 0 : sfFlt('sfMemTotalMin', 0),
+    mem_total_max: document.getElementById('sfMemTotalRand').checked ? 0 : sfFlt('sfMemTotalMax', 0),
+    disk_total_min: document.getElementById('sfDiskTotalRand').checked ? 0 : sfFlt('sfDiskTotalMin', 0),
+    disk_total_max: document.getElementById('sfDiskTotalRand').checked ? 0 : sfFlt('sfDiskTotalMax', 0),
   };
   const btn = document.getElementById('sfStart');
   btn.disabled = true;

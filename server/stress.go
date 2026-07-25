@@ -105,6 +105,12 @@ type StressParams struct {
 	CpuMax       float64  `json:"cpu_max"`
 	MemMin       float64  `json:"mem_min"` // 使用率 %；0 = 随机
 	MemMax       float64  `json:"mem_max"`
+	CpuCoresMin  int      `json:"cpu_cores_min"`  // 核心数；0 = 随机
+	CpuCoresMax  int      `json:"cpu_cores_max"`
+	MemTotalMin  float64  `json:"mem_total_min"` // GB；0 = 随机
+	MemTotalMax  float64  `json:"mem_total_max"`
+	DiskTotalMin float64  `json:"disk_total_min"` // GB；0 = 随机
+	DiskTotalMax float64  `json:"disk_total_max"`
 	Group        string   `json:"group"`
 }
 
@@ -234,6 +240,33 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		}
 		uptimeDays = rnd(r, float64(lo), float64(hi))
 	}
+	// CPU 核心数
+	cpuCount := r.Intn(32) + 1
+	if p.CpuCoresMin > 0 && p.CpuCoresMax > 0 {
+		lo, hi := p.CpuCoresMin, p.CpuCoresMax
+		if hi < lo {
+			lo, hi = hi, lo
+		}
+		cpuCount = r.Intn(hi-lo+1) + lo
+	}
+	// 内存大小（GB）
+	memTotal := rnd(r, 1, 128)
+	if p.MemTotalMin > 0 && p.MemTotalMax > 0 {
+		lo, hi := p.MemTotalMin, p.MemTotalMax
+		if hi < lo {
+			lo, hi = hi, lo
+		}
+		memTotal = rnd(r, lo, hi)
+	}
+	// 硬盘大小（GB）
+	diskTotal := rnd(r, 20, 2000)
+	if p.DiskTotalMin > 0 && p.DiskTotalMax > 0 {
+		lo, hi := p.DiskTotalMin, p.DiskTotalMax
+		if hi < lo {
+			lo, hi = hi, lo
+		}
+		diskTotal = rnd(r, lo, hi)
+	}
 	a := stressAgent{
 		r:           r,
 		uuid:        newUUID(),
@@ -243,9 +276,9 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		countryCode: c.code,
 		osName:      osName,
 		platform:    platform,
-		cpuCount:    r.Intn(32) + 1,
-		memTotal:    rnd(r, 1, 128),
-		diskTotal:   rnd(r, 20, 2000),
+		cpuCount:    cpuCount,
+		memTotal:    memTotal,
+		diskTotal:   diskTotal,
 		uptime:      int64(uptimeDays) * 86400,
 		online:      r.Float64() < p.OnlineRatio,
 	}
