@@ -100,7 +100,7 @@ type StressParams struct {
 	UptimeMin    int      `json:"uptime_min"`  // 天；0 = 随机
 	UptimeMax    int      `json:"uptime_max"`
 	TrafficLevel string   `json:"traffic_level"` // low/mid/high/random
-	OnlineRatio  float64  `json:"online_ratio"`  // 0..1，默认 1
+	OfflineCount int      `json:"offline_count"` // 离线机器数量（与在线同规则，仅 online=false）
 	CpuMin       float64  `json:"cpu_min"`       // %；0 = 随机
 	CpuMax       float64  `json:"cpu_max"`
 	MemMin       float64  `json:"mem_min"` // 使用率 %；0 = 随机
@@ -205,6 +205,49 @@ func pickEvenOrOne(r *mrand.Rand, lo, hi int) int {
 	return k * 2
 }
 
+// pickMemGE 返回内存大小（GB）：仅"1 或偶数"，且必须 >= minVal（通常为 CPU 核心数）。
+// 优先在 [memLo, memHi] 区间内取；若区间内无满足 >= minVal 的合法值（例如核心数已大于内存上限），
+// 则向上取到最小合法偶数/1，忽略 memHi 上限——保证"内存必须大于等于核心数"这一硬约束不被破坏。
+func pickMemGE(r *mrand.Rand, memLo, memHi, minVal int) int {
+	if memLo > memHi {
+		memLo, memHi = memHi, memLo
+	}
+	if memLo < 1 {
+		memLo = 1
+	}
+	// 区间下界提升到 >= max(memLo, minVal) 的最小合法值（1 或偶数）
+	lo := memLo
+	if minVal > lo {
+		lo = minVal
+	}
+	start := lo
+	if start != 1 && start%2 != 0 {
+		start++
+	}
+	if start > memHi {
+		// 区间内无合法值：返回向上取到的最小合法值（忽略上限）
+		return start
+	}
+	// 在 [start, memHi] 内随机取一个合法值
+	hi := memHi
+	if hi%2 != 0 {
+		hi--
+	}
+	if start == 1 {
+		// 含 1（~20% 概率，仅当 1>=minVal 时）与 [2..hi] 的偶数
+		if minVal <= 1 && r.Intn(5) == 0 {
+			return 1
+		}
+		if hi < 2 {
+			return 2
+		}
+		k := r.Intn(hi/2-1+1) + 1 // 1..hi/2
+		return k * 2
+	}
+	k := r.Intn(hi/2-start/2+1) + start/2
+	return k * 2
+}
+
 // makeHostname 生成多样化主机名（避免全是 host-XXXXXXXX 风格）：
 // 多种前缀 + 小写字母数字混合后缀，长度 3–10 不等，模拟真实 VPS 命名习惯
 func makeHostname(r *mrand.Rand) string {
@@ -288,11 +331,12 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 	if p.CpuCoresMin > 0 && p.CpuCoresMax > 0 {
 		cpuCount = pickEvenOrOne(r, p.CpuCoresMin, p.CpuCoresMax)
 	}
-	// 内存大小（GB，整数，仅 1 或偶数）
-	memTotal := pickEvenOrOne(r, 1, 128)
+	// 内存大小（GB，整数，仅 1 或偶数，且必须 >= CPU 核心数）
+	memLo, memHi := 1, 128
 	if p.MemTotalMin > 0 && p.MemTotalMax > 0 {
-		memTotal = pickEvenOrOne(r, int(p.MemTotalMin), int(p.MemTotalMax))
+		memLo, memHi = int(p.MemTotalMin), int(p.MemTotalMax)
 	}
+	memTotal := pickMemGE(r, memLo, memHi, cpuCount)
 	// 硬盘大小（GB，保持浮点随机）
 	diskTotal := rnd(r, 20, 2000)
 	if p.DiskTotalMin > 0 && p.DiskTotalMax > 0 {
@@ -315,7 +359,7 @@ func makeAgent(r *mrand.Rand, p StressParams) stressAgent {
 		memTotal:    memTotal,
 		diskTotal:   diskTotal,
 		uptime:      int64(uptimeDays) * 86400,
-		online:      r.Float64() < p.OnlineRatio,
+		online:      true, // 在线/离线由 Start 的批次决定
 	}
 	a.memPct = rnd(r, 10, 90)
 	a.memUsed = float64(a.memTotal) * a.memPct / 100
@@ -396,14 +440,19 @@ func (e *StressEngine) Start(p StressParams, db *sql.DB, hub *Hub) error {
 	if p.Count <= 0 {
 		p.Count = 2000
 	}
+	if p.OfflineCount < 0 {
+		p.OfflineCount = 0
+	}
+	// 总量上限 5000：优先保证在线数量，超出部分砍掉离线
+	if p.Count+p.OfflineCount > 5000 {
+		over := p.Count + p.OfflineCount - 5000
+		p.OfflineCount -= over
+		if p.OfflineCount < 0 {
+			p.OfflineCount = 0
+		}
+	}
 	if p.Count > 5000 {
 		p.Count = 5000
-	}
-	if p.OnlineRatio <= 0 {
-		p.OnlineRatio = 1
-	}
-	if p.OnlineRatio > 1 {
-		p.OnlineRatio = 1
 	}
 	group := p.Group
 	if group == "" {
@@ -416,9 +465,18 @@ func (e *StressEngine) Start(p StressParams, db *sql.DB, hub *Hub) error {
 	e.hub = hub
 	e.params = p
 	e.startTime = time.Now()
-	agents := make([]stressAgent, 0, p.Count)
+	total := p.Count + p.OfflineCount
+	agents := make([]stressAgent, 0, total)
+	base := seed.Int64()
 	for i := 0; i < p.Count; i++ {
-		agents = append(agents, makeAgent(mrand.New(mrand.NewSource(seed.Int64()+int64(i))), p))
+		a := makeAgent(mrand.New(mrand.NewSource(base+int64(i))), p)
+		a.online = true
+		agents = append(agents, a)
+	}
+	for i := 0; i < p.OfflineCount; i++ {
+		a := makeAgent(mrand.New(mrand.NewSource(base+int64(p.Count+i))), p)
+		a.online = false
+		agents = append(agents, a)
 	}
 	e.agents = agents
 
@@ -434,6 +492,12 @@ func (e *StressEngine) Start(p StressParams, db *sql.DB, hub *Hub) error {
 	// 分组打标（内存态，立即生效）
 	for i := range e.agents {
 		live.UpdateAdmin(e.agents[i].uuid, "", "", group, nil)
+	}
+	// 离线机：初始上报后立即置为离线，避免在前 15s 误显为在线
+	for i := range e.agents {
+		if !e.agents[i].online {
+			live.MarkOfflineNow(e.agents[i].uuid)
+		}
 	}
 	live.AddGroup(group)
 	if hub != nil {
@@ -529,10 +593,15 @@ func (e *StressEngine) Status() map[string]interface{} {
 	total := len(e.agents)
 	e.mu.Unlock()
 	online := 0
+	offline := 0
 	if running {
 		for _, a := range live.Snapshot() {
-			if a.Group == group && a.Online {
-				online++
+			if a.Group == group {
+				if a.Online {
+					online++
+				} else {
+					offline++
+				}
 			}
 		}
 	}
@@ -544,6 +613,7 @@ func (e *StressEngine) Status() map[string]interface{} {
 		"running":    running,
 		"total":      total,
 		"online":     online,
+		"offline":    offline,
 		"elapsedSec": elapsed,
 		"group":      group,
 	}

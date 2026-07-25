@@ -980,7 +980,7 @@ document.getElementById('sfStart').onclick = async () => {
   const p = {
     count: sfNum('sfCount', 2000),
     duration_sec: sfNum('sfDuration', 0),
-    online_ratio: sfNum('sfOnline', 100) / 100,
+    offline_count: sfNum('sfOffline', 0),
     traffic_level: document.getElementById('sfTraffic').value,
     group: document.getElementById('sfGroup').value.trim() || '干活的',
     countries: document.getElementById('sfCountryRand').checked ? [] : Array.from(sfCountriesSel),
@@ -1045,7 +1045,7 @@ function refreshStressStatus() {
       const startBtn = document.getElementById('sfStart');
       if (s.running) {
         box.classList.remove('hidden');
-        box.innerHTML = `运行中：分组「${escapeHtml(s.group || '')}」 共 <b>${s.total}</b> 台，在线 <b>${s.online}</b> 台，已运行 ${s.elapsedSec}s`;
+        box.innerHTML = `运行中：分组「${escapeHtml(s.group || '')}」 共 <b>${s.total}</b> 台，在线 <b>${s.online}</b> 台，离线 <b>${s.offline || 0}</b> 台，已运行 ${s.elapsedSec}s`;
         stopBtn.classList.remove('hidden');
         startBtn.classList.add('hidden');
       } else {
