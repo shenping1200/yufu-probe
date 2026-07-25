@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>渔夫探针</title>
 <link rel="icon" type="image/png" href="/icons/favicon.png?v=21">
-<link rel="stylesheet" href="/style.css?v=19">
+<link rel="stylesheet" href="/style.css?v=22">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
 </head>
 <body>
@@ -26,6 +26,7 @@
     </div>
     <div class="header-right">
       <button id="installCmdBtn" title="生成并复制 Linux 客户端一键安装命令" class="primary">📋 生成安装命令</button>
+      <button id="visitorLinkBtn" title="生成只读访客链接（仅查看，不能编辑）" class="primary">🧑‍🤝‍🧑 访客链接</button>
       <div class="view-toggle" id="viewToggle">
         <button data-mode="card" title="卡片视图">卡片</button>
         <button data-mode="list" title="列表视图">列表</button>
@@ -68,7 +69,18 @@
     </div>
   </div>
 
-  <div id="groupTabs" class="group-tabs"></div>
+  <div class="group-bar">
+    <div id="groupTabs" class="group-tabs"></div>
+    <button id="mapToggle" class="map-toggle" title="显示/隐藏世界地图">🗺️ 地图</button>
+  </div>
+
+  <div id="mapWrap" class="map-wrap hidden">
+    <div class="map-head">
+      <span id="mapTitle">服务器分布</span>
+      <span id="mapCount" class="map-count"></span>
+    </div>
+    <div id="mapBox" class="map-box"></div>
+  </div>
 
   <div class="agents-scroll" id="agentsScroll"></div>
 
@@ -233,9 +245,24 @@
   </div>
 </div>
 
+  <div id="visitorLinkModal" class="modal hidden">
+    <div class="modal-box" style="max-width:560px;">
+      <h3>🧑‍🤝‍🧑 访客链接（只读）</h3>
+      <p style="color:var(--text-2);font-size:13px;margin:-4px 0 12px;">通过此链接进入的人只能查看，无法编辑/SSH/启动压测/生成安装命令。有效期 24 小时。</p>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="visitorLinkInput" readonly style="flex:1;font-family:monospace;font-size:13px;">
+        <button id="visitorLinkCopy" class="primary">复制</button>
+      </div>
+      <p id="visitorLinkExpire" style="color:var(--text-2);font-size:12px;margin-top:10px;"></p>
+      <div class="modal-actions">
+        <button id="visitorLinkClose">关闭</button>
+      </div>
+    </div>
+  </div>
+
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
-<script src="/app.js?v=22"></script>
+<script src="/app.js?v=25"></script>
 </body>
 </html>

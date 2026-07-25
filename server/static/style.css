@@ -247,6 +247,35 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 /* 卡片视图虚拟滚动时，网格容器高度由 JS 撑满 N 行；卡片用 grid-column/grid-row 绝对落位 */
 .agents-grid.virtual { display: grid; position: relative; padding: 0 28px 28px; }
 
+/* ---------- 折叠世界地图（分组行最右侧开关控制开合） ---------- */
+.group-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 28px 18px; min-height: 0;
+}
+.map-toggle {
+  flex: none; padding: 7px 14px; border: 1px solid var(--border);
+  background: var(--bg-3); color: var(--text); border-radius: 20px;
+  cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.map-toggle:hover { border-color: var(--primary); }
+.map-toggle.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+.map-wrap { padding: 0 28px 16px; }
+.map-wrap.hidden { display: none; }
+.map-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+#mapTitle { font-size: 14px; font-weight: 600; color: var(--text); }
+.map-count { font-size: 12px; color: var(--text-2); }
+.map-box {
+  width: 100%; border-radius: 10px;
+  background: var(--bg); border: 1px solid var(--border); padding: 8px;
+  display: flex; justify-content: center;
+}
+.map-box svg { display: block; width: 100%; max-width: 920px; height: auto; }
+.map-box svg path { fill: var(--border); stroke: var(--bg-2); stroke-width: 0.4; transition: fill .15s; cursor: default; }
+.map-box svg path.lit { fill: var(--primary); }
+.map-empty { padding: 28px; text-align: center; color: var(--text-2); font-size: 13px; }
+
 /* ---------- 详情曲线 ---------- */
 .detail-bar {
   display: flex; align-items: center; justify-content: space-between;
@@ -295,14 +324,14 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .modal-actions button { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-3); color: var(--text); cursor: pointer; }
 .modal-actions .primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 
-/* ---------- 顶部"生成安装命令"按钮 ---------- */
-#installCmdBtn {
+/* ---------- 顶部主操作按钮（生成安装命令 / 访客链接 同款蓝） ---------- */
+.primary {
   padding: 7px 14px; border-radius: 8px; border: 1px solid var(--primary);
   background: var(--primary); color: #fff; font-size: 13px; cursor: pointer;
   margin-right: 6px;
 }
-#installCmdBtn:hover { opacity: .9; }
-#installCmdBtn:disabled { opacity: .5; cursor: not-allowed; }
+.primary:hover { opacity: .9; }
+.primary:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- 编辑模态：日期输入 ---------- */
 .modal-box input[type=date] {
@@ -340,7 +369,7 @@ body.light .modal-box input[type=date] { color-scheme: light; }
 /* ---------- 分组（顶部筛选标签条，参考"炸酱面探针"） ---------- */
 .group-tabs {
   display: flex; flex-wrap: wrap; gap: 10px;
-  padding: 0 28px 18px; align-items: center;
+  padding: 0; align-items: center; flex: 1 1 auto; min-width: 0;
 }
 .group-tab {
   display: inline-flex; align-items: center; gap: 7px;
@@ -416,7 +445,8 @@ body.light .modal-box input[type=date] { color-scheme: light; }
 .card-group { font-size: 11px; color: var(--text-2); margin-right: 6px; }
 
 @media (max-width: 640px) {
-  .group-tabs { padding: 0 14px 14px; gap: 8px; }
+  .group-bar { padding: 0 14px 12px; gap: 8px; }
+  .group-tabs { gap: 8px; }
   .group-tab { padding: 6px 12px; font-size: 12px; }
 }
 

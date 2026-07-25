@@ -110,6 +110,11 @@ func InitDB(path string) (*sql.DB, error) {
 			fail_count INTEGER DEFAULT 0,
 			locked_until INTEGER DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS visitor_links (
+			token TEXT PRIMARY KEY,
+			created_at INTEGER DEFAULT 0,
+			expires_at INTEGER DEFAULT 0
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err = db.Exec(s); err != nil {
@@ -125,6 +130,8 @@ func InitDB(path string) (*sql.DB, error) {
 	db.Exec(`ALTER TABLE agents ADD COLUMN remark TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE agents ADD COLUMN expire_at INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE agents ADD COLUMN group_name TEXT DEFAULT ''`)
+	// 会话区分管理员/访客
+	db.Exec(`ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`)
 	return db, nil
 }
 

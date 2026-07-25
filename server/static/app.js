@@ -14,6 +14,10 @@ const state = {
   maskIP: localStorage.getItem('yufu_mask_ip') === '1',
   // 当前选中的分组筛选（'' = 全部，'⚠ 离线' = 离线，否则为自定义组名）
   currentGroup: '',
+  // 折叠世界地图开关（仅本浏览器，localStorage 持久化，默认关）
+  mapOpen: localStorage.getItem('yufu_map_open') === '1',
+  // 角色：admin（管理员） / visitor（访客只读）。由 /api/me 返回。
+  role: 'admin',
 };
 let chart = null;
 
@@ -88,7 +92,7 @@ async function checkLogin() {
     const r = await fetch('/api/me');
     if (r.ok) {
       const d = await r.json();
-      showApp(d.username);
+      showApp(d.username, d.role || 'admin');
       connectWS();
     } else {
       showLogin();
@@ -98,16 +102,42 @@ async function checkLogin() {
   }
 }
 
-function showApp(user) {
+function showApp(user, role) {
   document.getElementById('login').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
-  document.getElementById('user').textContent = user;
+  document.getElementById('user').textContent = user + (role === 'visitor' ? '（访客）' : '');
   state.loggedIn = true;
+  state.role = role || 'admin';
+  applyRoleGating();
 }
 function showLogin() {
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login').classList.remove('hidden');
   state.loggedIn = false;
+}
+
+// ---------- 角色权限门控（admin 全功能 / visitor 只读） ----------
+function isVisitor() { return state.role === 'visitor'; }
+
+// 隐藏/禁用访客模式下不可用的入口；每行按钮（编辑/SSH）在 render() 后重新打一次
+function applyRoleGating() {
+  const v = isVisitor();
+  const hide = id => { const e = document.getElementById(id); if (e) e.style.display = v ? 'none' : ''; };
+  // 顶部按钮
+  hide('installCmdBtn');     // 生成安装命令
+  hide('visitorLinkBtn');    // 签发访客链接（只有管理员能给访客开门）
+  hide('stressBtn');         // 压力测试入口
+  hide('logoutBtn');         // 访客就别登出了，关页面即可
+  hide('maskIpBtn');         // IP 模糊开关（访客 IP 已强制隐藏，此开关无意义）
+  // 分组行：+ 新建分组 按钮
+  hide('newGroupBtn');
+  // 每行动作按钮
+  document.querySelectorAll('.btn-edit, .btn-ssh').forEach(b => { if (v) b.style.display = 'none'; });
+  // 别名/名称内联编辑（只读）
+  document.querySelectorAll('.list-name, .card-name').forEach(inp => {
+    if (v) { inp.setAttribute('readonly', 'readonly'); inp.style.cursor = 'default'; }
+    else { inp.removeAttribute('readonly'); inp.style.cursor = ''; }
+  });
 }
 
 document.getElementById('loginBtn').onclick = async () => {
@@ -303,7 +333,11 @@ function maskIP(ip) {
 }
 // ipBlockHTML 双栈公网 IP 展示：v4 在上、v6 在下，有哪个显示哪个；
 // 纯 v6 / 纯 v4 只显示一行；无公网 IP 时回退本机 IP 并标注"内网"。
+// 访客模式：全局不显示 IP（v4/v6/内网 IP 全部隐藏）。
 function ipBlockHTML(a) {
+  if (isVisitor()) {
+    return '<span class="ip-line ip-hidden">🔒 已隐藏</span>';
+  }
   const fmt = ip => escapeHtml(state.maskIP ? maskIP(ip) : ip);
   const v4 = a.public_ip4 || '';
   const v6 = a.public_ip6 || '';
@@ -337,6 +371,8 @@ function render() {
   } else {
     renderCard();
   }
+  if (state.mapOpen) renderMap();
+  applyRoleGating(); // 访客模式下隐藏/禁用每行的编辑/SSH 按钮（行内容每次重渲染，需重新打）
 }
 
 // requestRender 把多次实时更新合并到下一帧渲染一次，避免高频消息下重复重建 DOM
@@ -352,12 +388,14 @@ function requestRender() {
 }
 
 function renderSummary() {
-  const total = state.agents.length;
-  const online = state.agents.filter(a => a.online).length;
-  const rxTotal = state.agents.reduce((s, a) => s + (a.rx_month || 0), 0);
-  const txTotal = state.agents.reduce((s, a) => s + (a.tx_month || 0), 0);
-  const rxRate = state.agents.reduce((s, a) => s + (a.rx_rate || 0), 0);
-  const txRate = state.agents.reduce((s, a) => s + (a.tx_rate || 0), 0);
+  // 统计跟随当前分组筛选（复用 filteredAgents：''=全部, '⚠ 离线'=离线, 自定义组=该组）
+  const list = filteredAgents();
+  const total = list.length;
+  const online = list.filter(a => a.online).length;
+  const rxTotal = list.reduce((s, a) => s + (a.rx_month || 0), 0);
+  const txTotal = list.reduce((s, a) => s + (a.tx_month || 0), 0);
+  const rxRate = list.reduce((s, a) => s + (a.rx_rate || 0), 0);
+  const txRate = list.reduce((s, a) => s + (a.tx_rate || 0), 0);
 
   document.getElementById('sumTotal').textContent = total;
   document.getElementById('sumOnline').textContent = online;
@@ -461,6 +499,7 @@ function renderGroupTabs() {
 
 // 重命名分组：改名会作用于该分组下的全部客户端
 async function groupRename(oldName) {
+  if (isVisitor()) return;
   const input = prompt('重命名分组「' + oldName + '」\n将把该分组下的所有客户端移动到新分组：', oldName);
   if (input === null) return;
   const newName = input.trim();
@@ -495,6 +534,7 @@ async function groupDelete(name) {
 
 // 新建分组：弹窗输入名称 → 注册到分组表（不需要任何客户端属于此分组）
 async function groupCreate() {
+  if (isVisitor()) return;
   const input = prompt('新建分组\n请输入分组名（先建一个空组，再用「编辑机器」把客户端加进来）：');
   if (input === null) return;
   const name = input.trim();
@@ -703,7 +743,7 @@ document.getElementById('editModal').addEventListener('click', e => {
   if (e.target.id === 'editModal') closeEdit();
 });
 document.getElementById('editSave').onclick = async () => {
-  if (!editUUID) return;
+  if (!editUUID || isVisitor()) return;
   const name = document.getElementById('editName').value;
   const group = document.getElementById('editGroup').value.trim();
   const remark = document.getElementById('editRemark').value;
@@ -809,6 +849,7 @@ function bindAliasInputs(selector) {
   document.querySelectorAll(selector).forEach(inp => {
     inp.onclick = e => e.stopPropagation();
     const save = async () => {
+      if (isVisitor()) return;
       await fetch('/api/agents/' + inp.dataset.uuid + '/alias', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -854,6 +895,7 @@ document.getElementById('closeDetail').onclick = () => {
 
 // ---------- 生成安装命令 ----------
 document.getElementById('installCmdBtn').onclick = async () => {
+  if (isVisitor()) return;
   const btn = document.getElementById('installCmdBtn');
   btn.disabled = true;
   try {
@@ -887,6 +929,47 @@ document.getElementById('installCopyBtn').onclick = async () => {
 document.getElementById('installCloseBtn').onclick = () => {
   document.getElementById('installModal').classList.add('hidden');
 };
+
+// ---------- 访客链接（仅管理员可签发） ----------
+document.getElementById('visitorLinkBtn').onclick = async () => {
+  if (isVisitor()) return;
+  const btn = document.getElementById('visitorLinkBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/visitor/link', { method: 'POST' });
+    if (!r.ok) {
+      if (r.status === 403) throw new Error('当前为访客，无权签发');
+      throw new Error('签发失败: HTTP ' + r.status);
+    }
+    const d = await r.json();
+    const full = window.location.origin + d.path;
+    document.getElementById('visitorLinkInput').value = full;
+    document.getElementById('visitorLinkExpire').textContent = '有效期至：' + d.expires + '（UTC）';
+    document.getElementById('visitorLinkModal').classList.remove('hidden');
+    try { await navigator.clipboard.writeText(full); } catch (e) {}
+  } catch (e) {
+    alert('签发访客链接失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
+document.getElementById('visitorLinkCopy').onclick = async () => {
+  const txt = document.getElementById('visitorLinkInput').value;
+  try {
+    await navigator.clipboard.writeText(txt);
+    const btn = document.getElementById('visitorLinkCopy');
+    const old = btn.textContent;
+    btn.textContent = '✓ 已复制';
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  } catch (e) {
+    const inp = document.getElementById('visitorLinkInput');
+    inp.select();
+    document.execCommand && document.execCommand('copy');
+  }
+};
+document.getElementById('visitorLinkClose').onclick = () => {
+  document.getElementById('visitorLinkModal').classList.add('hidden');
+};
 document.getElementById('installModal').addEventListener('click', e => {
   if (e.target.id === 'installModal') document.getElementById('installModal').classList.add('hidden');
 });
@@ -900,6 +983,7 @@ function b64dec(b64) { return decodeURIComponent(escape(atob(b64))); }
 
 // 打开密码弹窗
 function openSSH(uuid) {
+  if (isVisitor()) return;
   termUUID = uuid;
   document.getElementById('sshPassInput').value = '';
   document.getElementById('sshPassErr').textContent = '';
@@ -1250,5 +1334,71 @@ function refreshStressStatus() {
       }
     });
 }
+
+// ---------- 折叠世界地图 ----------
+// /world.svg 只取一次，之后复用缓存，避免每次 render 都发网络请求
+let mapSvgCache = null;
+let mapSvgInjected = false;
+
+async function renderMap() {
+  if (!state.mapOpen) return;
+  const box = document.getElementById('mapBox');
+  const countEl = document.getElementById('mapCount');
+  if (!box) return;
+
+  // 首次注入 SVG（来自 /world.svg，已编译进 Go 二进制，路径自动可用）
+  if (!mapSvgInjected) {
+    if (mapSvgCache === null) {
+      try {
+        const resp = await fetch('/world.svg');
+        if (!resp.ok) throw new Error('http ' + resp.status);
+        mapSvgCache = await resp.text();
+      } catch (e) {
+        box.innerHTML = '<div class="map-empty">地图加载失败</div>';
+        return;
+      }
+    }
+    box.innerHTML = mapSvgCache;
+    mapSvgInjected = true;
+  }
+
+  // 聚合各国家/地区机器数量（在线/离线都算），country_code 转小写与 path id 对齐
+  const counts = {};
+  let covered = 0;
+  for (const a of state.agents) {
+    const cc = (a.country_code || '').toLowerCase();
+    if (!cc) continue;
+    counts[cc] = (counts[cc] || 0) + 1;
+    covered++;
+  }
+
+  // 先清除上一次点亮，再按当前数据重新点亮（压测停止后对应区域应熄灭）
+  const svg = box.querySelector('svg');
+  if (svg) {
+    svg.querySelectorAll('path.lit').forEach(p => p.classList.remove('lit'));
+    svg.querySelectorAll('path').forEach(p => {
+      const id = p.getAttribute('id');
+      if (id && counts[id]) p.classList.add('lit');
+    });
+  }
+
+  const litN = Object.keys(counts).length;
+  countEl.textContent = `已点亮 ${litN} 个国家/地区 · 覆盖 ${covered} 台`;
+}
+
+// 地图开关：切换开合 + 持久化 + 打开时即时渲染
+const mapToggleEl = document.getElementById('mapToggle');
+mapToggleEl.onclick = () => {
+  state.mapOpen = !state.mapOpen;
+  localStorage.setItem('yufu_map_open', state.mapOpen ? '1' : '0');
+  document.getElementById('mapWrap').classList.toggle('hidden', !state.mapOpen);
+  mapToggleEl.classList.toggle('active', state.mapOpen);
+  if (state.mapOpen) renderMap();
+};
+
+// 初始化开关与地图状态（默认关，若上次于本浏览器开启则恢复）
+document.getElementById('mapWrap').classList.toggle('hidden', !state.mapOpen);
+mapToggleEl.classList.toggle('active', state.mapOpen);
+if (state.mapOpen) renderMap();
 
 checkLogin();

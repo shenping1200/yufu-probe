@@ -1,13 +1,16 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -87,7 +90,7 @@ func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
-		token, err := createSession(db)
+		token, err := createSession(db, roleAdmin)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -121,10 +124,17 @@ func logoutHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func meHandler(cfg *Config) http.HandlerFunc {
+func meHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"username": cfg.Admin.Username})
+		role := roleVisitor
+		if c, err := r.Cookie(sessionCookie); err == nil && sessionRole(db, c.Value) == roleAdmin {
+			role = roleAdmin
+		}
+		json.NewEncoder(w).Encode(map[string]string{
+			"username": cfg.Admin.Username,
+			"role":     role,
+		})
 	}
 }
 
@@ -521,6 +531,66 @@ func stressStatusHandler() http.HandlerFunc {
 	}
 }
 
+// ---------- 访客链接 ----------
+
+// 访客链接默认有效期 24 小时
+const visitorLinkTTL = 24 * time.Hour
+
+// visitorLinkHandler 管理员签发访客链接：生成随机 token、写入 visitor_links（带过期）、返回路径
+func visitorLinkHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		b := make([]byte, 24)
+		if _, err := rand.Read(b); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		token := hex.EncodeToString(b)
+		now := time.Now().Unix()
+		_, err := db.Exec(`INSERT INTO visitor_links (token, created_at, expires_at) VALUES (?, ?, ?)`,
+			token, now, now+int64(visitorLinkTTL.Seconds()))
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"path":     "/v/" + token,
+			"token":    token,
+			"expires":  time.Unix(now+int64(visitorLinkTTL.Seconds()), 0).UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+// visitorLandingHandler 访客打开 /v/{token}：校验 token 未过期 → 创建访客会话 → 跳首页
+func visitorLandingHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := mux.Vars(r)["token"]
+		if token == "" {
+			http.NotFound(w, r)
+			return
+		}
+		var expires int64
+		err := db.QueryRow(`SELECT expires_at FROM visitor_links WHERE token=?`, token).Scan(&expires)
+		if err != nil || time.Now().Unix() > expires {
+			http.Error(w, "link expired or invalid", http.StatusGone)
+			return
+		}
+		st, err := createSession(db, roleVisitor)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookie,
+			Value:    st,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+		http.Redirect(w, r, "/", http.StatusFound)
+	}
+}
+
 // viewerWSHandler 浏览器实时订阅（需登录 session）
 func viewerWSHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -553,29 +623,31 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r := mux.NewRouter()
 	r.HandleFunc("/api/login", loginHandler(cfg, db)).Methods("POST")
 	r.HandleFunc("/api/logout", logoutHandler(db)).Methods("POST")
-	r.HandleFunc("/api/me", requireLogin(db, meHandler(cfg))).Methods("GET")
-	r.HandleFunc("/api/install-command", requireLogin(db, installCommandHandler(cfg))).Methods("GET")
+	r.HandleFunc("/api/me", requireLogin(db, meHandler(cfg, db))).Methods("GET")
+	r.HandleFunc("/api/install-command", requireAdmin(db, installCommandHandler(cfg))).Methods("GET")
 	r.HandleFunc("/api/agents", requireLogin(db, agentsHandler(db))).Methods("GET")
-	r.HandleFunc("/api/agents/{uuid}/alias", requireLogin(db, aliasHandler(db))).Methods("PUT")
-	r.HandleFunc("/api/agents/{uuid}", requireLogin(db, updateAgentHandler(db))).Methods("PATCH")
-	// 分组级管理：新建 / 列表 / 重命名 / 删除（删除会把成员移回「未分组」）
-	r.HandleFunc("/api/groups", requireLogin(db, createGroupHandler(db, hub))).Methods("POST")
+	r.HandleFunc("/api/agents/{uuid}/alias", requireAdmin(db, aliasHandler(db))).Methods("PUT")
+	r.HandleFunc("/api/agents/{uuid}", requireAdmin(db, updateAgentHandler(db))).Methods("PATCH")
+	// 分组级管理：列表（只读）访客可看；新建/重命名/删除仅管理员
+	r.HandleFunc("/api/groups", requireAdmin(db, createGroupHandler(db, hub))).Methods("POST")
 	r.HandleFunc("/api/groups", requireLogin(db, listGroupsHandler(db))).Methods("GET")
-	r.HandleFunc("/api/groups/{name}", requireLogin(db, renameGroupHandler(db, hub))).Methods("PATCH")
-	r.HandleFunc("/api/groups/{name}", requireLogin(db, deleteGroupHandler(db, hub))).Methods("DELETE")
+	r.HandleFunc("/api/groups/{name}", requireAdmin(db, renameGroupHandler(db, hub))).Methods("PATCH")
+	r.HandleFunc("/api/groups/{name}", requireAdmin(db, deleteGroupHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}", requireAgentToken(cfg, deleteAgentHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}/traffic", requireLogin(db, trafficHandler(db))).Methods("GET")
 	r.HandleFunc("/ws/agent", agentWSHandler(cfg, db, hub))
 	r.HandleFunc("/ws/viewer", viewerWSHandler(db, hub))
-	// Web SSH 终端网关：浏览器按 uuid 连接，服务端校验后桥接 agent
-	r.HandleFunc("/ws/terminal/{uuid}", requireLogin(db, terminalWSHandler(cfg, db, hub)))
-	// 手动解除 SSH 锁定（单台或全量）
-	r.HandleFunc("/api/ssh/unlock", requireLogin(db, unlockHandler(db))).Methods("POST")
-	// 压力测试（内置引擎）：选项 / 启动 / 停止 / 状态
+	// Web SSH 终端网关与解锁：仅管理员（访客不可 SSH）
+	r.HandleFunc("/ws/terminal/{uuid}", requireAdmin(db, terminalWSHandler(cfg, db, hub)))
+	r.HandleFunc("/api/ssh/unlock", requireAdmin(db, unlockHandler(db))).Methods("POST")
+	// 压力测试：选项/状态访客可看，启动/停止仅管理员
 	r.HandleFunc("/api/stress/options", requireLogin(db, stressOptionsHandler(db))).Methods("GET")
-	r.HandleFunc("/api/stress/start", requireLogin(db, stressStartHandler(cfg, db, hub))).Methods("POST")
-	r.HandleFunc("/api/stress/stop", requireLogin(db, stressStopHandler(db, hub))).Methods("POST")
+	r.HandleFunc("/api/stress/start", requireAdmin(db, stressStartHandler(cfg, db, hub))).Methods("POST")
+	r.HandleFunc("/api/stress/stop", requireAdmin(db, stressStopHandler(db, hub))).Methods("POST")
 	r.HandleFunc("/api/stress/status", requireLogin(db, stressStatusHandler())).Methods("GET")
+	// 访客链接：签发仅管理员，落地页免登录
+	r.HandleFunc("/api/visitor/link", requireAdmin(db, visitorLinkHandler(db))).Methods("POST")
+	r.HandleFunc("/v/{token}", visitorLandingHandler(db)).Methods("GET")
 	r.PathPrefix("/").Handler(http.FileServer(http.FS(staticSubFS)))
 	return r
 }
