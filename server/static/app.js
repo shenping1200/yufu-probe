@@ -37,18 +37,50 @@ function applyViewToggle() {
   document.querySelectorAll('#viewToggle button').forEach(b => {
     b.classList.toggle('active', b.dataset.mode === state.viewMode);
   });
-  document.getElementById('agentsGrid').classList.toggle('hidden', state.viewMode !== 'card');
-  document.getElementById('agentsTable').classList.toggle('hidden', state.viewMode !== 'list');
 }
 applyViewToggle();
+
+// 机器区滚动容器（卡片/列表共用），承载 2000+ 客户端虚拟滚动
+const agentsScrollEl = document.getElementById('agentsScroll');
 
 document.getElementById('viewToggle').onclick = (e) => {
   if (e.target.tagName !== 'BUTTON') return;
   state.viewMode = e.target.dataset.mode;
   localStorage.setItem('probe-view', state.viewMode);
   applyViewToggle();
+  agentsScrollEl.scrollTop = 0; // 切换视图回到顶部，避免残留滚动位置
   render();
 };
+
+// 虚拟滚动阈值：超过此数量才启用「只渲染可视区」的差量渲染，否则走原整表逻辑（更稳、零回归）
+const VIRTUAL_THRESHOLD = 300;
+
+// 滚动事件经 rAF 节流后只重算可视窗口（不重建整张表/网格），保证 2000+ 客户端滚动顺滑
+let scrollScheduled = false;
+agentsScrollEl.addEventListener('scroll', () => {
+  if (scrollScheduled) return;
+  scrollScheduled = true;
+  requestAnimationFrame(() => {
+    scrollScheduled = false;
+    const list = filteredAgents();
+    if (list.length <= VIRTUAL_THRESHOLD) return; // 非虚拟模式无需响应
+    if (state.viewMode === 'list') renderListWindow(agentsScrollEl.scrollTop);
+    else renderCardWindow(agentsScrollEl.scrollTop);
+  });
+});
+
+// 窗口尺寸变化（主要影响卡片列数）时，整表重算虚拟窗口
+let resizeScheduled = false;
+window.addEventListener('resize', () => {
+  if (resizeScheduled) return;
+  resizeScheduled = true;
+  requestAnimationFrame(() => {
+    resizeScheduled = false;
+    const list = filteredAgents();
+    if (list.length <= VIRTUAL_THRESHOLD) return;
+    if (state.viewMode === 'card') renderCard(); // 列数可能变化，整体重算
+  });
+});
 
 // ---------- 登录态 ----------
 async function checkLogin() {
@@ -505,7 +537,7 @@ async function refreshAgents() {
 }
 
 // 单张卡片 HTML（分组由渲染层统一处理，这里只画卡片本身）
-function cardHTML(a) {
+function cardInner(a) {
   const alias = a.alias || a.hostname || a.uuid.slice(0, 8);
   const code = a.country_code || (isPrivateIP(a.ip) ? '内网' : '');
   const loc = a.country ? (a.country.replace(stripFlagEmoji(a.country) || '', '').trim()) : '';
@@ -518,83 +550,125 @@ function cardHTML(a) {
   const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
   const groupBadge = a.group ? `<span class="card-group" title="分组">🏷️ ${escapeHtml(a.group)}</span>` : '';
   return `
-    <div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${a.uuid}">
-      <div class="card-header">
-        <div class="card-title">
-          <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
-          <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button>${a.online ? `<button class="btn-ssh" data-uuid="${a.uuid}" title="Web SSH 终端">SSH</button>` : ''}
-          <div class="card-status">
-            <span class="dot ${a.online ? 'on' : 'off'}"></span>
-            <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
-          </div>
+    <div class="card-header">
+      <div class="card-title">
+        <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
+        <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button>${a.online ? `<button class="btn-ssh" data-uuid="${a.uuid}" title="Web SSH 终端">SSH</button>` : ''}
+        <div class="card-status">
+          <span class="dot ${a.online ? 'on' : 'off'}"></span>
+          <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
         </div>
       </div>
-      <div class="card-meta">
-        <span class="card-os">${distroImg}</span>
-        <span>${flagImg} ${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}</span>
-        <span>⏱️ ${fmtUptime(a.uptime)}</span>
+    </div>
+    <div class="card-meta">
+      <span class="card-os">${distroImg}</span>
+      <span>${flagImg} ${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}</span>
+      <span>⏱️ ${fmtUptime(a.uptime)}</span>
+    </div>
+    <div class="card-ip">${ipBlockHTML(a)}</div>
+    <div class="card-config">
+      <span class="card-config-text">${escapeHtml(fmtConfig(a))}</span>
+      ${cdBadge}
+    </div>
+    ${groupBadge ? `<div class="card-remark">${groupBadge}${a.remark ? ' 📝 ' + escapeHtml(a.remark) : ''}</div>` : (a.remark ? `<div class="card-remark">📝 ${escapeHtml(a.remark)}</div>` : '')}
+    <div class="card-metrics">
+      <div class="metric">
+        <div class="metric-label">CPU ${a.cpu.toFixed(1)}%</div>
+        <div class="metric-bar"><div class="bar-cpu" style="width:${percent(a.cpu, 100)}%"></div></div>
       </div>
-      <div class="card-ip">${ipBlockHTML(a)}</div>
-      <div class="card-config">
-        <span class="card-config-text">${escapeHtml(fmtConfig(a))}</span>
-        ${cdBadge}
+      <div class="metric">
+        <div class="metric-label">内存 ${fmtSize(a.mem_used)} / ${fmtSize(a.mem_total)}</div>
+        <div class="metric-bar"><div class="bar-mem" style="width:${percent(a.mem_used, a.mem_total)}%"></div></div>
       </div>
-      ${groupBadge ? `<div class="card-remark">${groupBadge}${a.remark ? ' 📝 ' + escapeHtml(a.remark) : ''}</div>` : (a.remark ? `<div class="card-remark">📝 ${escapeHtml(a.remark)}</div>` : '')}
-      <div class="card-metrics">
-        <div class="metric">
-          <div class="metric-label">CPU ${a.cpu.toFixed(1)}%</div>
-          <div class="metric-bar"><div class="bar-cpu" style="width:${percent(a.cpu, 100)}%"></div></div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">内存 ${fmtSize(a.mem_used)} / ${fmtSize(a.mem_total)}</div>
-          <div class="metric-bar"><div class="bar-mem" style="width:${percent(a.mem_used, a.mem_total)}%"></div></div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">磁盘 ${fmtSize(a.disk_used)} / ${fmtSize(a.disk_total)}</div>
-          <div class="metric-bar"><div class="bar-disk" style="width:${percent(a.disk_used, a.disk_total)}%"></div></div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">实时速率</div>
-          <div class="metric-value speed">
-            <div class="down">↓${fmtRate(a.rx_rate)}</div>
-            <div class="up">↑${fmtRate(a.tx_rate)}</div>
-          </div>
+      <div class="metric">
+        <div class="metric-label">磁盘 ${fmtSize(a.disk_used)} / ${fmtSize(a.disk_total)}</div>
+        <div class="metric-bar"><div class="bar-disk" style="width:${percent(a.disk_used, a.disk_total)}%"></div></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">实时速率</div>
+        <div class="metric-value speed">
+          <div class="down">↓${fmtRate(a.rx_rate)}</div>
+          <div class="up">↑${fmtRate(a.tx_rate)}</div>
         </div>
       </div>
-      <div class="card-traffic">
-        <div class="traffic-item">
-          <div class="traffic-label">本月下载 ↓</div>
-          <div class="traffic-value down">${fmtBytes(a.rx_month)}</div>
-          <div class="traffic-sub">每月1日重置</div>
-        </div>
-        <div class="traffic-item">
-          <div class="traffic-label">本月上传 ↑</div>
-          <div class="traffic-value up">${fmtBytes(a.tx_month)}</div>
-          <div class="traffic-sub">自然月累计</div>
-        </div>
+    </div>
+    <div class="card-traffic">
+      <div class="traffic-item">
+        <div class="traffic-label">本月下载 ↓</div>
+        <div class="traffic-value down">${fmtBytes(a.rx_month)}</div>
+        <div class="traffic-sub">每月1日重置</div>
+      </div>
+      <div class="traffic-item">
+        <div class="traffic-label">本月上传 ↑</div>
+        <div class="traffic-value up">${fmtBytes(a.tx_month)}</div>
+        <div class="traffic-sub">自然月累计</div>
       </div>
     </div>`;
 }
+function cardHTML(a) {
+  return `<div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${a.uuid}">${cardInner(a)}</div>`;
+}
+function cardHTMLAt(a, style) {
+  return `<div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${a.uuid}" style="${style}">${cardInner(a)}</div>`;
+}
 
+// 卡片视图：单卡固定高 400px + 间距 20px。超过阈值时按可视窗口绝对放置卡片（虚拟滚动）
+const CARD_H = 400, CARD_GAP = 20, CARD_MIN_W = 340;
+function cardCols() {
+  const cw = (agentsScrollEl.clientWidth || 1200) - 56; // 减去 .agents-grid 左右内边距
+  return Math.max(1, Math.floor((cw + CARD_GAP) / (CARD_MIN_W + CARD_GAP)));
+}
 function renderCard() {
-  const grid = document.getElementById('agentsGrid');
+  const scroll = agentsScrollEl;
   const list = filteredAgents();
-  let html = '';
+  const saved = scroll.scrollTop;
   if (list.length === 0) {
-    html = `<div class="empty-tip">该分组下暂无客户端</div>`;
-  } else {
+    scroll.innerHTML = `<div class="empty-tip">该分组下暂无客户端</div>`;
+    return;
+  }
+  if (list.length <= VIRTUAL_THRESHOLD) {
+    let html = '';
     for (const a of list) html += cardHTML(a);
+    scroll.innerHTML = `<div class="agents-grid">${html}</div>`;
+    bindCardEvents(scroll);
+    return;
+  }
+  // 虚拟滚动：网格容器高度撑满 N 行，仅渲染可视窗口内的卡片
+  const cols = cardCols();
+  const rowH = CARD_H + CARD_GAP;
+  const rows = Math.ceil(list.length / cols);
+  const totalH = rows * CARD_H + (rows - 1) * CARD_GAP;
+  scroll.innerHTML =
+    `<div class="agents-grid virtual" style="grid-template-columns:repeat(${cols},1fr);grid-auto-rows:${CARD_H}px;height:${totalH}px;"></div>`;
+  renderCardWindow(saved);
+  scroll.scrollTop = saved;
+}
+function renderCardWindow(scrollTop) {
+  const scroll = agentsScrollEl;
+  const grid = scroll.querySelector('.agents-grid.virtual');
+  if (!grid) return;
+  const list = filteredAgents();
+  const cols = cardCols();
+  const rowH = CARD_H + CARD_GAP;
+  const rows = Math.ceil(list.length / cols);
+  const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
+  const visRows = Math.ceil(scroll.clientHeight / rowH);
+  const endRow = Math.min(rows, startRow + visRows + 2);
+  let html = '';
+  for (let r = startRow; r < endRow; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      if (i >= list.length) break;
+      html += cardHTMLAt(list[i], `grid-column:${c + 1};grid-row:${r + 1};`);
+    }
   }
   grid.innerHTML = html;
-  grid.querySelectorAll('.agent-card').forEach(el => {
-    el.onclick = () => openDetail(el.dataset.uuid);
-  });
-  grid.querySelectorAll('.btn-edit').forEach(btn => {
-    btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); };
-  });
-  grid.querySelectorAll('.btn-ssh').forEach(btn => {
-    btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); };
-  });
+  bindCardEvents(grid);
+}
+function bindCardEvents(root) {
+  root.querySelectorAll('.agent-card').forEach(el => { el.onclick = () => openDetail(el.dataset.uuid); });
+  root.querySelectorAll('.btn-edit').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); }; });
+  root.querySelectorAll('.btn-ssh').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); }; });
   bindAliasInputs('.card-name');
 }
 
@@ -678,43 +752,56 @@ function listRowHTML(a) {
   `;
 }
 
+// 列表视图：行高钉死 64px。超过阈值时用上下占位行撑起总高、仅渲染可视行（虚拟滚动）
+const LIST_ROW_H = 64;
 function renderList() {
-  const table = document.getElementById('agentsTable');
+  const scroll = agentsScrollEl;
   const list = filteredAgents();
-  let rows = '';
+  const saved = scroll.scrollTop;
+  const thead = `
+    <thead>
+      <tr>
+        <th>状态</th><th>别名</th><th>位置</th><th>配置</th><th>运行时间</th>
+        <th>使用率</th><th>实时速率</th><th>本月流量</th><th>操作</th>
+      </tr>
+    </thead>`;
   if (list.length === 0) {
-    rows = `<tr><td colspan="9" class="empty-tip">该分组下暂无客户端</td></tr>`;
-  } else {
-    for (const a of list) rows += listRowHTML(a);
+    scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody><tr><td colspan="9" class="empty-tip">该分组下暂无客户端</td></tr></tbody></table></div>`;
+    return;
   }
-  table.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>状态</th>
-          <th>别名</th>
-          <th>位置</th>
-          <th>配置</th>
-          <th>运行时间</th>
-          <th>使用率</th>
-          <th>实时速率</th>
-          <th>本月流量</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
-
-  table.querySelectorAll('.btn-chart').forEach(btn => {
-    btn.onclick = () => openDetail(btn.dataset.uuid);
-  });
-  table.querySelectorAll('.btn-edit').forEach(btn => {
-    btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); };
-  });
-  table.querySelectorAll('.btn-ssh').forEach(btn => {
-    btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); };
-  });
+  if (list.length <= VIRTUAL_THRESHOLD) {
+    let rows = '';
+    for (const a of list) rows += listRowHTML(a);
+    scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody>${rows}</tbody></table></div>`;
+    bindListEvents(scroll);
+    return;
+  }
+  // 虚拟滚动：tbody 用上下占位行撑起 N*64px 总高，只渲染可视窗口内的行
+  scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody></tbody></table></div>`;
+  renderListWindow(saved);
+  scroll.scrollTop = saved;
+}
+function renderListWindow(scrollTop) {
+  const scroll = agentsScrollEl;
+  const table = scroll.querySelector('table');
+  const tbody = table && table.querySelector('tbody');
+  if (!tbody) return;
+  const list = filteredAgents();
+  const theadH = (table.querySelector('thead') && table.querySelector('thead').offsetHeight) || 0;
+  const top = scrollTop - theadH;
+  const start = Math.max(0, Math.floor(top / LIST_ROW_H) - 1);
+  const visRows = Math.ceil(scroll.clientHeight / LIST_ROW_H);
+  const end = Math.min(list.length, start + visRows + 2);
+  let html = `<tr class="vspacer" style="height:${start * LIST_ROW_H}px"><td colspan="9" style="height:${start * LIST_ROW_H}px"></td></tr>`;
+  for (let i = start; i < end; i++) html += listRowHTML(list[i]);
+  html += `<tr class="vspacer" style="height:${(list.length - end) * LIST_ROW_H}px"><td colspan="9" style="height:${(list.length - end) * LIST_ROW_H}px"></td></tr>`;
+  tbody.innerHTML = html;
+  bindListEvents(tbody);
+}
+function bindListEvents(root) {
+  root.querySelectorAll('.btn-chart').forEach(btn => { btn.onclick = () => openDetail(btn.dataset.uuid); });
+  root.querySelectorAll('.btn-edit').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); }; });
+  root.querySelectorAll('.btn-ssh').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); }; });
   bindAliasInputs('.list-name');
 }
 

@@ -26,6 +26,7 @@ body.light {
 
 body {
   margin: 0;
+  height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -109,6 +110,7 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
   background: var(--bg-2); border: 1px solid var(--border); border-radius: 14px;
   padding: 18px; box-shadow: var(--shadow); cursor: pointer;
   transition: transform .1s, border-color .2s;
+  height: 400px; overflow: hidden;
 }
 .agent-card:hover { transform: translateY(-2px); border-color: var(--primary); }
 .agent-card.offline { opacity: .7; }
@@ -196,7 +198,6 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 /* ---------- 列表视图 ---------- */
 .agents-table {
   padding: 0 28px 28px;
-  overflow-x: auto;
 }
 .agents-table table {
   width: 100%; min-width: 980px; border-collapse: collapse;
@@ -233,6 +234,18 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
   border-radius: 6px; cursor: pointer; font-size: 12px;
 }
 .agents-table .btn-chart:hover { border-color: var(--primary); }
+
+/* ---------- 虚拟滚动（2000+ 客户端性能优化） ---------- */
+/* #app 改为 100vh 弹性列布局，机器区在自身内部滚动，而非整页滚动 */
+#app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.agents-scroll { flex: 1; min-height: 0; overflow: auto; position: relative; }
+/* 列表视图：行高钉死 64px，配合 JS 上下占位行实现只渲染可视区 */
+.agents-table tbody tr { height: 64px; }
+/* 占位行：撑起总高度但不显示任何边框/背景 */
+.vspacer td { border: none !important; padding: 0 !important; background: transparent !important; }
+.vspacer:hover td { background: transparent !important; }
+/* 卡片视图虚拟滚动时，网格容器高度由 JS 撑满 N 行；卡片用 grid-column/grid-row 绝对落位 */
+.agents-grid.virtual { display: grid; position: relative; padding: 0 28px 28px; }
 
 /* ---------- 详情曲线 ---------- */
 .detail-bar {
