@@ -233,9 +233,10 @@ const DISTRO_COLOR = {
 // 匹配到具体发行版用品牌色（避免单色全黑看不出是哪个发行版）；
 // 回退到通用 Linux 时用 currentColor 跟随主题文字色（深/浅主题自适应）。
 function distroIcon(platform, os, title) {
-  // 先用 os（包含发行版名如 "Ubuntu 22.04"）匹配具体 logo；匹配不到再回退到 platform；
-  // 否则所有 Linux 都会被通用企鹅"抢答"覆盖
-  const key = (os || platform || '').toLowerCase();
+  // 把 platform 和 os 拼成一个 key：真实 agent 的 Platform 是发行版名（"ubuntu"）、
+  // OS 是内核版本（"Linux 5.15..."）；压测引擎反过来 platform="linux"、os="Ubuntu 22.04"。
+  // 两种来源拼接后都能被 DISTRO_MAP 正则命中；都拿不到具体信息时才回退通用企鹅。
+  const key = ((platform || '') + ' ' + (os || '')).toLowerCase();
   let name = 'linux';
   for (const [re, svg] of DISTRO_MAP) {
     if (re.test(key)) { name = svg; break; }
