@@ -201,10 +201,11 @@ function fmtBytes(b) {
   do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
   return n.toFixed(2) + ' ' + u[i];
 }
-// 容量显示（GB 入参，直接显示为 "x.x GB"，自动去掉无意义的尾零；
-// 4 → "4 GB"，17.53 → "17.5 GB"，0.96 → "1 GB"）
+// 容量显示（GB 入参，<1GB 自动切 MB 避免小内存被舍成 0；
+// 4 → "4 GB"，17.53 → "17.5 GB"，0.96 → "956 MB"，0.13 → "128 MB"）
 function fmtSize(v) {
   if (v == null || v < 0) return '-';
+  if (v < 1) return Math.round(v * 1024) + ' MB';
   return parseFloat(v.toFixed(1)) + ' GB';
 }
 function fmtRate(bps) {
