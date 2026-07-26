@@ -365,7 +365,7 @@ function fmtConfig(a) {
 // ---------- 渲染 ----------
 function render() {
   renderGroupTabs();
-  buildGroupOptions();
+  populateGroupSelect();
   renderSummary();
   if (state.viewMode === 'list') {
     renderList();
@@ -417,6 +417,7 @@ function filteredAgents() {
   const g = state.currentGroup;
   if (!g) return state.agents;
   if (g === OFFLINE_GROUP) return state.agents.filter(a => !a.online);
+  if (g === '未分组') return state.agents.filter(a => a.online && !a.group);
   return state.agents.filter(a => a.online && a.group === g);
 }
 
@@ -557,11 +558,19 @@ async function groupCreate() {
   }
 }
 
-// 把分组下拉框（<datalist>）的选项同步成当前 state.groups
-function buildGroupOptions() {
-  const dl = document.getElementById('group-options');
-  if (!dl) return;
-  dl.innerHTML = state.groups.map(g => `<option value="${escapeHtml(g)}"></option>`).join('');
+// 把编辑弹窗里的「分组」下拉框（原生 <select>）同步成当前 state.groups：
+// 含一个「（未分组）」空值项 + 所有已注册分组，按中文排序。每次 render 重建，
+// 因此 WS 推送来新分组（或改名/删除）后无需手动刷新即可见。
+function populateGroupSelect() {
+  const sel = document.getElementById('editGroup');
+  if (!sel) return;
+  const cur = sel.value;                      // 重建前记住当前选中，避免丢失
+  const opts = ['<option value="">（未分组）</option>'];
+  for (const g of [...state.groups].sort((x, y) => x.localeCompare(y, 'zh'))) {
+    opts.push(`<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  if (cur) sel.value = cur;                   // 还原选中（仅当该值仍是合法选项）
 }
 
 // 立即从 REST 拉取最新全量列表（分组改名/删除后保证界面即时刷新，不依赖 WS 推送时序）
