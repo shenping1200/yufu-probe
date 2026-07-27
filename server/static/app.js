@@ -820,12 +820,13 @@ function renderList() {
   const thead = `
     <thead>
       <tr>
+        <th class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" id="selectAllChk" onclick="event.stopPropagation()"></label></th>
         <th>状态</th><th>别名</th><th>位置</th><th>配置</th><th>运行时间</th>
         <th>使用率</th><th>实时速率</th><th>本月流量</th><th style="width:1%;white-space:nowrap">操作</th>
       </tr>
     </thead>`;
   if (list.length === 0) {
-    scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody><tr><td colspan="9" class="empty-tip">该分组下暂无客户端</td></tr></tbody></table></div>`;
+    scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody><tr><td colspan="10" class="empty-tip">该分组下暂无客户端</td></tr></tbody></table></div>`;
     return;
   }
   if (list.length <= VIRTUAL_THRESHOLD) {
@@ -864,6 +865,20 @@ function bindListEvents(root) {
   root.querySelectorAll('.btn-del').forEach(btn => { btn.onclick = e => { e.stopPropagation(); deleteAgent(btn.dataset.uuid); }; });
   bindCardCheckboxes(root);
   bindAliasInputs('.list-name');
+  const sa = root.querySelector('#selectAllChk');
+  if (sa) {
+    const list = filteredAgents();
+    sa.checked = list.length > 0 && list.every(a => state.selected.has(a.uuid));
+    sa.onchange = (e) => {
+      e.stopPropagation();
+      const checked = sa.checked;
+      filteredAgents().forEach(a => {
+        if (checked) state.selected.add(a.uuid);
+        else state.selected.delete(a.uuid);
+      });
+      requestRender();
+    };
+  }
 }
 
 function bindAliasInputs(selector) {
