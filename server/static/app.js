@@ -821,7 +821,7 @@ function renderList() {
     <thead>
       <tr>
         <th>状态</th><th>别名</th><th>位置</th><th>配置</th><th>运行时间</th>
-        <th>使用率</th><th>实时速率</th><th>本月流量</th><th>操作</th>
+        <th>使用率</th><th>实时速率</th><th>本月流量</th><th style="width:1%;white-space:nowrap">操作</th>
       </tr>
     </thead>`;
   if (list.length === 0) {
@@ -914,23 +914,44 @@ document.getElementById('closeDetail').onclick = () => {
   state.currentUUID = null;
 };
 
-// ---------- 生成安装命令 ----------
+// ---------- 生成安装 / 卸载命令（同时拉两个接口） ----------
 document.getElementById('installCmdBtn').onclick = async () => {
   if (isVisitor()) return;
   const btn = document.getElementById('installCmdBtn');
   btn.disabled = true;
   try {
-    const r = await fetch('/api/install-command');
-    if (!r.ok) throw new Error('获取失败: HTTP ' + r.status);
-    const d = await r.json();
-    document.getElementById('installCmdText').value = d.command;
+    const [ri, ru] = await Promise.all([
+      fetch('/api/install-command'),
+      fetch('/api/uninstall-command'),
+    ]);
+    if (!ri.ok) throw new Error('获取安装命令失败: HTTP ' + ri.status);
+    if (!ru.ok) throw new Error('获取卸载命令失败: HTTP ' + ru.status);
+    const di = await ri.json();
+    const du = await ru.json();
+    document.getElementById('installCmdText').value = di.command;
+    document.getElementById('uninstallCmdText').value = du.command;
     document.getElementById('installModal').classList.remove('hidden');
-    // 自动复制（需 HTTPS / localhost；失败静默回落到用户手动点复制）
-    try { await navigator.clipboard.writeText(d.command); } catch (e) {}
+    // 自动复制安装命令（需 HTTPS / localhost；失败静默回落到用户手动点复制）
+    try { await navigator.clipboard.writeText(di.command); } catch (e) {}
   } catch (e) {
-    alert('获取安装命令失败：' + e.message);
+    alert('获取命令失败：' + e.message);
   } finally {
     btn.disabled = false;
+  }
+};
+// 卸载命令：复制到剪贴板
+document.getElementById('uninstallCopyBtn').onclick = async () => {
+  const txt = document.getElementById('uninstallCmdText').value;
+  try {
+    await navigator.clipboard.writeText(txt);
+    const b = document.getElementById('uninstallCopyBtn');
+    const old = b.textContent;
+    b.textContent = '✓ 已复制';
+    setTimeout(() => { b.textContent = old; }, 1500);
+  } catch (e) {
+    const ta = document.getElementById('uninstallCmdText');
+    ta.select();
+    document.execCommand && document.execCommand('copy');
   }
 };
 document.getElementById('installCopyBtn').onclick = async () => {

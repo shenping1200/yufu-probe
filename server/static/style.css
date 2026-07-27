@@ -230,8 +230,8 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 }
 .agents-table .mini-bar > div { height: 100%; border-radius: 3px; }
 .agents-table .btn-chart {
-  padding: 5px 10px; border: 1px solid var(--border); background: var(--bg-3); color: var(--text);
-  border-radius: 6px; cursor: pointer; font-size: 12px;
+  padding: 2px 8px; border: 1px solid var(--border); background: var(--bg-3); color: var(--text-2);
+  border-radius: 6px; cursor: pointer; font-size: 13px;
 }
 .agents-table .btn-chart:hover { border-color: var(--primary); }
 
@@ -556,11 +556,11 @@ button.danger:hover { background: var(--danger); color: #fff; }
 .card-chk-wrap { display: inline-flex; align-items: center; margin-right: 6px; }
 .sel-td { width: 32px; text-align: center; }
 .btn-del {
-  background: transparent;
-  border: 1px solid transparent;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
   color: #b3344a;
   border-radius: 6px;
-  padding: 2px 7px;
+  padding: 2px 8px;
   cursor: pointer;
   font-size: 13px;
   margin-left: 4px;
