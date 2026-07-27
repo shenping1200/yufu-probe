@@ -231,7 +231,7 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .agents-table .mini-bar > div { height: 100%; border-radius: 3px; }
 .agents-table .btn-chart {
   padding: 2px 8px; border: 1px solid var(--border); background: var(--bg-3); color: var(--text-2);
-  border-radius: 6px; cursor: pointer; font-size: 13px;
+  border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1.4;
 }
 .agents-table .btn-chart:hover { border-color: var(--primary); }
 
@@ -563,7 +563,7 @@ button.danger:hover { background: var(--danger); color: #fff; }
   padding: 2px 8px;
   cursor: pointer;
   font-size: 13px;
-  margin-left: 4px;
+  margin-left: 6px;
 }
 .btn-del:hover { background: #5c1a24; border-color: #ef4444; color: #fca5a5; }
 
