@@ -547,9 +547,9 @@ button.danger:hover { background: var(--danger); color: #fff; }
   cursor: pointer;
   transition: background .15s, border-color .15s;
 }
-.batch-bar .bb-btn:hover { background: #2f3441; border-color: #3a4150; }
+.batch-bar .bb-btn:hover { background: #3a4150; border-color: #4b5563; color: #f8fafc; }
 .batch-bar .bb-btn.danger { color: #fca5a5; border-color: #7f1d2a; }
-.batch-bar .bb-btn.danger:hover { background: #3a1d24; }
+.batch-bar .bb-btn.danger:hover { background: #5c1a24; border-color: #ef4444; color: #fecaca; }
 
 /* 卡片/列表复选框 */
 .sel-chk { cursor: pointer; width: 16px; height: 16px; accent-color: #7dd3fc; }
@@ -565,4 +565,32 @@ button.danger:hover { background: var(--danger); color: #fff; }
   font-size: 13px;
   margin-left: 4px;
 }
-.btn-del:hover { background: #3a1d24; border-color: #7f1d2a; }
+.btn-del:hover { background: #5c1a24; border-color: #ef4444; color: #fecaca; }
+
+/* 批量改分组：下拉选择已有分组浮层 */
+.gp-mask {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.gp-box {
+  background: var(--bg-1, #1c2027); color: var(--text, #e6e8ee);
+  border: 1px solid var(--border, #2a2f3a); border-radius: 10px;
+  padding: 16px 18px; width: 300px; max-width: 90vw;
+  box-shadow: 0 10px 40px rgba(0,0,0,.5);
+}
+.gp-title { font-size: 13px; margin-bottom: 12px; }
+.gp-select {
+  width: 100%; padding: 8px 10px; border-radius: 6px; font-size: 13px;
+  background: var(--bg-2, #252932); color: var(--text, #e6e8ee);
+  border: 1px solid var(--border, #2a2f3a);
+}
+.gp-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.gp-btn {
+  background: var(--bg-2, #252932); color: var(--text, #e6e8ee);
+  border: 1px solid var(--border, #2a2f3a); border-radius: 6px;
+  padding: 6px 14px; font-size: 13px; cursor: pointer;
+}
+.gp-btn:hover { background: #3a4150; border-color: #4b5563; color: #f8fafc; }
+.gp-btn.ok { background: #2563eb; border-color: #2563eb; color: #fff; }
+.gp-btn.ok:hover { background: #3b82f6; border-color: #3b82f6; }

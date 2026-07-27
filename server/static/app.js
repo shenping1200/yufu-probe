@@ -1518,26 +1518,88 @@ async function batchDeleteAgents() {
 }
 
 // 批量改分组：弹窗输入（prompt）新分组名（留空 = 未分组）；只改选中机器的分组，其它字段保留。
-async function batchChangeGroup() {
+// 批量改分组：弹出下拉菜单选择已有分组（不输入、不创建）
+function batchChangeGroup() {
   const uuids = [...state.selected];
   if (!uuids.length) return;
-  const hint = '可选分组：\n' + (state.groups.length ? state.groups.join(' / ') : '（暂无）') + '\n（未分组）\n\n留空 = 移到「未分组」';
-  const v = prompt('批量改分组（已选 ' + uuids.length + ' 台）：\n\n' + hint + '\n\n请输入分组名：', '');
-  if (v === null) return;
-  const group = v.trim();
-  try {
-    const r = await fetch('/api/agents', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uuids, group }),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    state.selected.clear();
-    requestRender();
-  } catch (e) {
-    alert('批量改分组失败：' + e.message);
-  }
+  showGroupPicker(uuids);
 }
+
+// 下拉选择已有分组的浮层
+function showGroupPicker(uuids) {
+  closeGroupPicker();
+  const mask = document.createElement('div');
+  mask.className = 'gp-mask';
+  mask.id = 'gpMask';
+
+  const box = document.createElement('div');
+  box.className = 'gp-box';
+
+  const title = document.createElement('div');
+  title.className = 'gp-title';
+  title.textContent = '批量改分组（已选 ' + uuids.length + ' 台）';
+
+  const sel = document.createElement('select');
+  sel.className = 'gp-select';
+  const optNone = document.createElement('option');
+  optNone.value = '';
+  optNone.textContent = '（未分组）';
+  sel.appendChild(optNone);
+  [...state.groups].sort((x, y) => x.localeCompare(y, 'zh')).forEach(g => {
+    const o = document.createElement('option');
+    o.value = g;
+    o.textContent = g;
+    sel.appendChild(o);
+  });
+
+  const row = document.createElement('div');
+  row.className = 'gp-actions';
+  const cancel = document.createElement('button');
+  cancel.className = 'gp-btn';
+  cancel.textContent = '取消';
+  const ok = document.createElement('button');
+  ok.className = 'gp-btn ok';
+  ok.textContent = '确认';
+  row.appendChild(cancel);
+  row.appendChild(ok);
+
+  box.appendChild(title);
+  box.appendChild(sel);
+  box.appendChild(row);
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+
+  function closePicker() { closeGroupPicker(); }
+  cancel.onclick = closePicker;
+  mask.onclick = (e) => { if (e.target === mask) closePicker(); };
+  ok.onclick = async () => {
+    const group = sel.value;
+    ok.disabled = true;
+    ok.textContent = '处理中…';
+    try {
+      const r = await fetch('/api/agents', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uuids, group }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      state.selected.clear();
+      requestRender();
+      closePicker();
+    } catch (e) {
+      alert('批量改分组失败：' + e.message);
+      ok.disabled = false;
+      ok.textContent = '确认';
+    }
+  };
+}
+
+// 关闭分组选择浮层
+function closeGroupPicker() {
+  const m = document.getElementById('gpMask');
+  if (m && m.parentNode) m.parentNode.removeChild(m);
+}
+
 
 // 批量设备注
 async function batchSetRemark() {
