@@ -374,6 +374,32 @@ func requireAgentToken(cfg *Config, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requireAgentTokenOrAdmin 允许「Agent Token」或「管理员会话」任一种身份调用。
+// 用于删除接口：uninstall-agent.sh（带 Agent Token 自卸载）与管理员面板共用同一 DELETE 入口，
+// 不需要为面板再开一条独立路由。
+func requireAgentTokenOrAdmin(cfg *Config, db *sql.DB, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 1) 管理员会话优先
+		if c, err := r.Cookie(sessionCookie); err == nil {
+			if sessionRole(db, c.Value) == roleAdmin {
+				next(w, r)
+				return
+			}
+		}
+		// 2) 退而求其次：Agent Token（uninstall-agent.sh 用）
+		tok := r.Header.Get("Authorization")
+		tok = strings.TrimPrefix(tok, "Bearer ")
+		if tok == "" {
+			tok = r.URL.Query().Get("token")
+		}
+		if tok != "" && tok == cfg.AgentToken {
+			next(w, r)
+			return
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}
+}
+
 // deleteAgentHandler 删除机器（agent 主动注销或管理员移除，需 Agent Token 鉴权）
 func deleteAgentHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -386,6 +412,102 @@ func deleteAgentHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 		broadcastAgents(hub)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}
+}
+
+// batchDeleteAgentsHandler 批量删除机器（管理员）。body: {"uuids":[...]}
+func batchDeleteAgentsHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			UUIDs []string `json:"uuids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.UUIDs) == 0 {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, uuid := range req.UUIDs {
+			_ = DeleteAgent(db, uuid)
+			live.Remove(uuid)
+		}
+		broadcastAgents(hub)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "deleted": len(req.UUIDs)})
+	}
+}
+
+// batchUpdateAgentsHandler 批量更新选中机器的分组/备注/到期（管理员）。
+// 只改请求中出现的字段，未出现的字段保持原值（避免清空）。
+// body: {"uuids":[...], "group":可选, "remark":可选, "expire_at":可选}
+func batchUpdateAgentsHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			UUIDs    []string `json:"uuids"`
+			Group    *string  `json:"group"`
+			Remark   *string  `json:"remark"`
+			ExpireAt *int64   `json:"expire_at"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.UUIDs) == 0 {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, uuid := range req.UUIDs {
+			if req.Group != nil {
+				if err := SetAgentGroup(db, uuid, *req.Group); err != nil {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
+				live.PatchAgentFields(uuid, req.Group, nil, nil)
+				if *req.Group != "" {
+					live.AddGroup(*req.Group)
+				}
+			}
+			if req.Remark != nil {
+				if err := SetAgentRemark(db, uuid, *req.Remark); err != nil {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
+				live.PatchAgentFields(uuid, nil, req.Remark, nil)
+			}
+			if req.ExpireAt != nil {
+				if err := SetAgentExpire(db, uuid, req.ExpireAt); err != nil {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
+				live.PatchAgentFields(uuid, nil, nil, req.ExpireAt)
+			}
+		}
+		broadcastAgents(hub)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "updated": len(req.UUIDs)})
+	}
+}
+
+// uninstallCommandHandler 返回在客户端执行即可卸载 Agent 的命令（管理员）。
+// 与 installCommandHandler 镜像，只把脚本换成 uninstall-agent.sh。
+// 卸载脚本会自动探测本机 UUID 并调用 DELETE /api/agents/{uuid}（带 Agent Token）。
+func uninstallCommandHandler(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scheme := "ws"
+		if r.TLS != nil {
+			scheme = "wss"
+		}
+		if fp := r.Header.Get("X-Forwarded-Proto"); fp == "https" {
+			scheme = "wss"
+		} else if fp == "http" {
+			scheme = "ws"
+		}
+		host := r.Host
+		if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+			host = fh
+		}
+		wsURL := scheme + "://" + host
+		command := "bash <(curl -sSL https://raw.githubusercontent.com/" + repoFullName() + "/main/uninstall-agent.sh) " + wsURL + " " + cfg.AgentToken
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"command": command,
+			"ws":      wsURL,
+			"token":   cfg.AgentToken,
+		})
 	}
 }
 
@@ -625,15 +747,19 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/logout", logoutHandler(db)).Methods("POST")
 	r.HandleFunc("/api/me", requireLogin(db, meHandler(cfg, db))).Methods("GET")
 	r.HandleFunc("/api/install-command", requireAdmin(db, installCommandHandler(cfg))).Methods("GET")
+	r.HandleFunc("/api/uninstall-command", requireAdmin(db, uninstallCommandHandler(cfg))).Methods("GET")
 	r.HandleFunc("/api/agents", requireLogin(db, agentsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/agents/{uuid}/alias", requireAdmin(db, aliasHandler(db))).Methods("PUT")
 	r.HandleFunc("/api/agents/{uuid}", requireAdmin(db, updateAgentHandler(db))).Methods("PATCH")
+	// 批量操作（管理员）：DELETE/PATCH 作用于整批 uuid，路径不带 {uuid} 以区分单台
+	r.HandleFunc("/api/agents", requireAdmin(db, batchDeleteAgentsHandler(db, hub))).Methods("DELETE")
+	r.HandleFunc("/api/agents", requireAdmin(db, batchUpdateAgentsHandler(db, hub))).Methods("PATCH")
 	// 分组级管理：列表（只读）访客可看；新建/重命名/删除仅管理员
 	r.HandleFunc("/api/groups", requireAdmin(db, createGroupHandler(db, hub))).Methods("POST")
 	r.HandleFunc("/api/groups", requireLogin(db, listGroupsHandler(db))).Methods("GET")
 	r.HandleFunc("/api/groups/{name}", requireAdmin(db, renameGroupHandler(db, hub))).Methods("PATCH")
 	r.HandleFunc("/api/groups/{name}", requireAdmin(db, deleteGroupHandler(db, hub))).Methods("DELETE")
-	r.HandleFunc("/api/agents/{uuid}", requireAgentToken(cfg, deleteAgentHandler(db, hub))).Methods("DELETE")
+	r.HandleFunc("/api/agents/{uuid}", requireAgentTokenOrAdmin(cfg, db, deleteAgentHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}/traffic", requireLogin(db, trafficHandler(db))).Methods("GET")
 	r.HandleFunc("/ws/agent", agentWSHandler(cfg, db, hub))
 	r.HandleFunc("/ws/viewer", viewerWSHandler(db, hub))

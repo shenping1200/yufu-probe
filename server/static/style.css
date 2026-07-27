@@ -514,3 +514,55 @@ button.danger {
   padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 14px;
 }
 button.danger:hover { background: var(--danger); color: #fff; }
+
+/* ===== 批量多选 / 删除 ===== */
+.batch-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 18px;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-1, #1c1f25);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.35);
+  font-size: 13px;
+  color: var(--text, #e6e8ee);
+  flex-wrap: wrap;
+  max-width: calc(100vw - 36px);
+}
+.batch-bar .bb-info { margin-right: 6px; }
+.batch-bar .bb-info b { color: #7dd3fc; }
+.batch-bar .bb-btn {
+  background: var(--bg-2, #252932);
+  color: var(--text, #e6e8ee);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.batch-bar .bb-btn:hover { background: #2f3441; border-color: #3a4150; }
+.batch-bar .bb-btn.danger { color: #fca5a5; border-color: #7f1d2a; }
+.batch-bar .bb-btn.danger:hover { background: #3a1d24; }
+
+/* 卡片/列表复选框 */
+.sel-chk { cursor: pointer; width: 16px; height: 16px; accent-color: #7dd3fc; }
+.card-chk-wrap { display: inline-flex; align-items: center; margin-right: 6px; }
+.sel-td { width: 32px; text-align: center; }
+.btn-del {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #b3344a;
+  border-radius: 6px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-left: 4px;
+}
+.btn-del:hover { background: #3a1d24; border-color: #7f1d2a; }

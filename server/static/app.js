@@ -18,6 +18,8 @@ const state = {
   mapOpen: localStorage.getItem('yufu_map_open') === '1',
   // 角色：admin（管理员） / visitor（访客只读）。由 /api/me 返回。
   role: 'admin',
+  // 批量多选：选中的客户端 uuid 集合；切换分组/筛选时会清理
+  selected: new Set(),
 };
 let chart = null;
 
@@ -131,6 +133,7 @@ function applyRoleGating() {
   hide('maskIpBtn');         // IP 模糊开关（访客 IP 已强制隐藏，此开关无意义）
   // 分组行：+ 新建分组 按钮
   hide('newGroupBtn');
+  document.querySelectorAll('.sel-only, .del-only, #batchBar').forEach(e => { if (v) e.style.display = 'none'; else e.style.display = ''; });
   // 每行动作按钮
   document.querySelectorAll('.btn-edit, .btn-ssh').forEach(b => { if (v) b.style.display = 'none'; });
   // 别名/名称内联编辑（只读）
@@ -373,6 +376,7 @@ function render() {
     renderCard();
   }
   if (state.mapOpen) renderMap();
+  renderBatchBar();
   applyRoleGating(); // 访客模式下隐藏/禁用每行的编辑/SSH 按钮（行内容每次重渲染，需重新打）
 }
 
@@ -600,10 +604,10 @@ function cardInner(a) {
   const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
   const groupBadge = a.group ? `<span class="card-group" title="分组">🏷️ ${escapeHtml(a.group)}</span>` : '';
   return `
-    <div class="card-header">
+    <div class="card-header"><label class="sel-only card-chk-wrap"><input class="sel-chk" type="checkbox" data-uuid="${a.uuid}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label>
       <div class="card-title">
         <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
-        <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button>${a.online ? `<button class="btn-ssh" data-uuid="${a.uuid}" title="Web SSH 终端">SSH</button>` : ''}
+        <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button><button class="btn-del del-only" data-uuid="${a.uuid}" title="删除该客户端">🗑</button>${a.online ? `<button class="btn-ssh" data-uuid="${a.uuid}" title="Web SSH 终端">SSH</button>` : ''}
         <div class="card-status">
           <span class="dot ${a.online ? 'on' : 'off'}"></span>
           <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
@@ -719,6 +723,8 @@ function bindCardEvents(root) {
   root.querySelectorAll('.agent-card').forEach(el => { el.onclick = () => openDetail(el.dataset.uuid); });
   root.querySelectorAll('.btn-edit').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); }; });
   root.querySelectorAll('.btn-ssh').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); }; });
+  root.querySelectorAll('.btn-del').forEach(btn => { btn.onclick = e => { e.stopPropagation(); deleteAgent(btn.dataset.uuid); }; });
+  bindCardCheckboxes(root);
   bindAliasInputs('.card-name');
 }
 
@@ -749,6 +755,8 @@ function closeEdit() {
   editUUID = null;
 }
 document.getElementById('editCancel').onclick = closeEdit;
+document.getElementById('editDelete').onclick = () => { if (editUUID) deleteAgent(editUUID); };
+document.getElementById('editUninstall').onclick = copyUninstallCommand;
 document.getElementById('editModal').addEventListener('click', e => {
   if (e.target.id === 'editModal') closeEdit();
 });
@@ -785,6 +793,7 @@ function listRowHTML(a) {
   const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
   return `
     <tr>
+      <td class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" data-uuid="${a.uuid}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label></td>
       <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
       <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
       <td><span class="flag">${flagImg}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br>${ipBlockHTML(a)}</td>
@@ -797,7 +806,7 @@ function listRowHTML(a) {
       </td>
       <td><span class="down">↓${fmtRate(a.rx_rate)}</span><br><span class="up">↑${fmtRate(a.tx_rate)}</span></td>
       <td><span class="down">${fmtBytes(a.rx_month)}</span><br><span class="up">${fmtBytes(a.tx_month)}</span></td>
-      <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button>${a.online ? ` <button class="btn-ssh" data-uuid="${a.uuid}">SSH</button>` : ''}</td>
+      <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button>${a.online ? ` <button class="btn-ssh" data-uuid="${a.uuid}">SSH</button>` : ''} <button class="btn-del del-only" data-uuid="${a.uuid}" title="删除该客户端">删除</button></td>
     </tr>
   `;
 }
@@ -852,6 +861,8 @@ function bindListEvents(root) {
   root.querySelectorAll('.btn-chart').forEach(btn => { btn.onclick = () => openDetail(btn.dataset.uuid); });
   root.querySelectorAll('.btn-edit').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openEdit(btn.dataset.uuid); }; });
   root.querySelectorAll('.btn-ssh').forEach(btn => { btn.onclick = e => { e.stopPropagation(); openSSH(btn.dataset.uuid); }; });
+  root.querySelectorAll('.btn-del').forEach(btn => { btn.onclick = e => { e.stopPropagation(); deleteAgent(btn.dataset.uuid); }; });
+  bindCardCheckboxes(root);
   bindAliasInputs('.list-name');
 }
 
@@ -1412,3 +1423,189 @@ mapToggleEl.classList.toggle('active', state.mapOpen);
 if (state.mapOpen) renderMap();
 
 checkLogin();
+
+// ============================================================
+// 批量多选 / 删除 / 卸载命令（依赖后端 /api/agents 与 /api/uninstall-command）
+// ============================================================
+
+// 给容器里的 .sel-chk 绑定变更：切换 state.selected 并刷新批量栏。
+// 注意：卡片/列表重渲染后必须重新调用（DOM 是新造的），renderBatchBar 同理。
+function bindCardCheckboxes(root) {
+  root.querySelectorAll('.sel-chk').forEach(cb => {
+    cb.onclick = e => e.stopPropagation();
+    cb.onchange = () => {
+      const u = cb.dataset.uuid;
+      if (cb.checked) state.selected.add(u);
+      else state.selected.delete(u);
+      renderBatchBar();
+    };
+  });
+}
+
+// 底部批量操作栏：有选中时显示，含全选/取消/改分组/设备注/设到期/删除。
+// 访客模式由 applyRoleGating 隐藏。无选中时隐藏。
+function renderBatchBar() {
+  const bar = document.getElementById('batchBar');
+  if (!bar) return;
+  const n = state.selected.size;
+  if (n === 0) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = '';
+  bar.innerHTML =
+    '<span class="bb-info">已选 <b>' + n + '</b> 台</span>' +
+    '<button class="bb-btn" id="bbSelAll">全选当前筛选</button>' +
+    '<button class="bb-btn" id="bbSelNone">取消选择</button>' +
+    '<button class="bb-btn" id="bbGroup">批量改分组</button>' +
+    '<button class="bb-btn" id="bbRemark">批量设备注</button>' +
+    '<button class="bb-btn" id="bbExpire">批量设到期</button>' +
+    '<button class="bb-btn danger" id="bbDel">批量删除</button>';
+  const all = document.getElementById('bbSelAll');
+  const none = document.getElementById('bbSelNone');
+  const grp = document.getElementById('bbGroup');
+  const rmk = document.getElementById('bbRemark');
+  const exp = document.getElementById('bbExpire');
+  const del = document.getElementById('bbDel');
+  if (all) all.onclick = () => { filteredAgents().forEach(a => state.selected.add(a.uuid)); requestRender(); };
+  if (none) none.onclick = () => { state.selected.clear(); requestRender(); };
+  if (grp) grp.onclick = batchChangeGroup;
+  if (rmk) rmk.onclick = batchSetRemark;
+  if (exp) exp.onclick = batchSetExpire;
+  if (del) del.onclick = batchDeleteAgents;
+}
+
+// 单台删除（含确认）。提示文案说明「仅面板移除 + 复活可能」，引导用卸载命令彻底清理。
+async function deleteAgent(uuid) {
+  const a = state.agents.find(x => x.uuid === uuid);
+  const name = a ? (a.alias || a.hostname || uuid.slice(0, 8)) : uuid.slice(0, 8);
+  if (!confirm(
+    '确定删除「' + name + '」？\n' +
+    '该机器将从面板消失（数据库记录移除）。\n' +
+    '若客户端 agent 仍在运行，下次上报可能重新出现——\n' +
+    '想永久移除，请到该机器上运行「复制卸载命令」。'
+  )) return;
+  try {
+    const r = await fetch('/api/agents/' + encodeURIComponent(uuid), { method: 'DELETE' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    state.agents = state.agents.filter(x => x.uuid !== uuid);
+    state.selected.delete(uuid);
+    requestRender();
+  } catch (e) {
+    alert('删除失败：' + e.message);
+  }
+}
+
+// 批量删除（仅管理员）。一次 DELETE /api/agents，body {uuids:[...]}。
+async function batchDeleteAgents() {
+  const uuids = [...state.selected];
+  if (!uuids.length) return;
+  if (!confirm(
+    '确定删除已选 ' + uuids.length + ' 台机器？\n' +
+    '仅面板移除；若 agent 仍在运行可能复活。'
+  )) return;
+  try {
+    const r = await fetch('/api/agents', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uuids }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const set = new Set(uuids);
+    state.agents = state.agents.filter(a => !set.has(a.uuid));
+    state.selected.clear();
+    requestRender();
+  } catch (e) {
+    alert('批量删除失败：' + e.message);
+  }
+}
+
+// 批量改分组：弹窗输入（prompt）新分组名（留空 = 未分组）；只改选中机器的分组，其它字段保留。
+async function batchChangeGroup() {
+  const uuids = [...state.selected];
+  if (!uuids.length) return;
+  const hint = '可选分组：\n' + (state.groups.length ? state.groups.join(' / ') : '（暂无）') + '\n（未分组）\n\n留空 = 移到「未分组」';
+  const v = prompt('批量改分组（已选 ' + uuids.length + ' 台）：\n\n' + hint + '\n\n请输入分组名：', '');
+  if (v === null) return;
+  const group = v.trim();
+  try {
+    const r = await fetch('/api/agents', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uuids, group }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    state.selected.clear();
+    requestRender();
+  } catch (e) {
+    alert('批量改分组失败：' + e.message);
+  }
+}
+
+// 批量设备注
+async function batchSetRemark() {
+  const uuids = [...state.selected];
+  if (!uuids.length) return;
+  const v = prompt('批量设备注（已选 ' + uuids.length + ' 台）：', '');
+  if (v === null) return;
+  try {
+    const r = await fetch('/api/agents', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uuids, remark: v }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    state.selected.clear();
+    requestRender();
+  } catch (e) {
+    alert('批量设备注失败：' + e.message);
+  }
+}
+
+// 批量设到期：YYYY-MM-DD；留空 = 清空到期。
+async function batchSetExpire() {
+  const uuids = [...state.selected];
+  if (!uuids.length) return;
+  const v = prompt('批量设到期时间（已选 ' + uuids.length + ' 台）\n格式 YYYY-MM-DD（留空 = 清空到期）：', '');
+  if (v === null) return;
+  let expireAt = null;
+  if (v.trim()) {
+    const d = new Date(v.trim() + 'T23:59:59');
+    if (isNaN(d.getTime())) { alert('日期格式错误，应为 YYYY-MM-DD'); return; }
+    expireAt = Math.floor(d.getTime() / 1000);
+  }
+  try {
+    const r = await fetch('/api/agents', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uuids, expire_at: expireAt }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    state.selected.clear();
+    requestRender();
+  } catch (e) {
+    alert('批量设到期失败：' + e.message);
+  }
+}
+
+// 从服务端拉取卸载命令并写入剪贴板（仅管理员；编辑弹窗里点「复制卸载命令」调用）。
+async function copyUninstallCommand() {
+  try {
+    const r = await fetch('/api/uninstall-command');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(data.command);
+    } else {
+      // 旧浏览器降级
+      const ta = document.createElement('textarea');
+      ta.value = data.command; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta);
+    }
+    alert(
+      '卸载命令已复制到剪贴板。\n\n' + data.command + '\n\n' +
+      '请到目标客户端上以 root 身份粘贴执行：\n' +
+      '1) 通知服务端删除该机器记录\n2) 停掉并清理本机 agent 进程/服务/文件'
+    );
+  } catch (e) {
+    alert('获取/复制卸载命令失败：' + e.message);
+  }
+}

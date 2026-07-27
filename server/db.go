@@ -358,3 +358,28 @@ func UnlockAllSSH(db *sql.DB) error {
 	_, err := db.Exec(`DELETE FROM ssh_lock`)
 	return err
 }
+
+// SetAgentGroup 仅改分组（不动其它字段），并顺带把分组注册进 groups 表。
+func SetAgentGroup(db *sql.DB, uuid, group string) error {
+	if group != "" {
+		_, _ = db.Exec(`INSERT OR IGNORE INTO groups (name, created_at) VALUES (?, ?)`, group, time.Now().Unix())
+	}
+	_, err := db.Exec(`UPDATE agents SET group_name=? WHERE uuid=?`, group, uuid)
+	return err
+}
+
+// SetAgentRemark 仅改备注（不动其它字段）。
+func SetAgentRemark(db *sql.DB, uuid, remark string) error {
+	_, err := db.Exec(`UPDATE agents SET remark=? WHERE uuid=?`, remark, uuid)
+	return err
+}
+
+// SetAgentExpire 仅改到期时间（nil 表示清空）。
+func SetAgentExpire(db *sql.DB, uuid string, expireAt *int64) error {
+	var v sql.NullInt64
+	if expireAt != nil {
+		v = sql.NullInt64{Int64: *expireAt, Valid: true}
+	}
+	_, err := db.Exec(`UPDATE agents SET expire_at=? WHERE uuid=?`, v, uuid)
+	return err
+}

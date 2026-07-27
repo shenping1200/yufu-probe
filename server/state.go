@@ -241,6 +241,26 @@ func (s *ServerState) UpdateAdminEphemeral(uuid, alias, remark, group string, ex
 	s.updateAdmin(uuid, alias, remark, group, expireAt, false)
 }
 
+// PatchAgentFields 只更新请求中提供的字段（指针非 nil 才改），用于批量编辑时
+// 不覆盖未传字段（如仅改分组时保留备注/到期）。在锁内完成，避免并发读到半成品。
+func (s *ServerState) PatchAgentFields(uuid string, group, remark *string, expireAt *int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[uuid]
+	if !ok {
+		return
+	}
+	if group != nil {
+		a.Group = *group
+	}
+	if remark != nil {
+		a.Remark = *remark
+	}
+	if expireAt != nil {
+		a.ExpireAt = expireAt
+	}
+}
+
 func (s *ServerState) updateAdmin(uuid, alias, remark, group string, expireAt *int64, persist bool) {
 	s.mu.Lock()
 	a, ok := s.agents[uuid]

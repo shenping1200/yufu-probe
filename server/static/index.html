@@ -103,7 +103,10 @@
       <textarea id="editRemark" rows="3" placeholder="可选，例如：生产环境 Web 节点"></textarea>
       <label>VPS 到期时间 <span style="color:var(--text-2);font-weight:normal">（留空表示不设置）</span></label>
       <input id="editExpire" type="date">
-      <div class="modal-actions">
+      <div class="modal-actions" style="flex-wrap:wrap;gap:6px;justify-content:flex-start">
+        <button id="editDelete" class="danger del-only" style="background:#b3344a;color:#fff;border-color:#b3344a" title="仅从面板移除（agent 仍在跑可能复活）">删除该机器</button>
+        <button id="editUninstall" class="del-only" title="把卸载命令复制到剪贴板，去客户端执行可彻底移除（含停服务+清文件）">复制卸载命令</button>
+        <span style="flex:1"></span>
         <button id="editCancel">取消</button>
         <button id="editSave" class="primary">保存</button>
       </div>
@@ -262,6 +265,8 @@
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
-<script src="/app.js?v=27"></script>
+<script src="/app.js?v=28"></script>
+  <div id="batchBar" class="batch-bar" style="display:none"></div>
+
 </body>
 </html>
