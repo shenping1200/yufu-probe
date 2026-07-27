@@ -1518,16 +1518,12 @@ async function batchDeleteAgents() {
 }
 
 // 批量改分组：弹窗输入（prompt）新分组名（留空 = 未分组）；只改选中机器的分组，其它字段保留。
-// 批量改分组：弹出下拉菜单选择已有分组（不输入、不创建）
-function batchChangeGroup() {
-  const uuids = [...state.selected];
-  if (!uuids.length) return;
-  showGroupPicker(uuids);
-}
+// ============ 通用居中浮层（统一三个批量操作弹窗） ============
 
-// 下拉选择已有分组的浮层
-function showGroupPicker(uuids) {
-  closeGroupPicker();
+// 打开一个居中浮层；返回 { mask, box, ok, cancel, close }
+// body 内容由调用方在 box 里追加（用 insertBefore 到 .gp-actions 之前）
+function openCenterModal(title) {
+  closeCenterModal();
   const mask = document.createElement('div');
   mask.className = 'gp-mask';
   mask.id = 'gpMask';
@@ -1535,10 +1531,42 @@ function showGroupPicker(uuids) {
   const box = document.createElement('div');
   box.className = 'gp-box';
 
-  const title = document.createElement('div');
-  title.className = 'gp-title';
-  title.textContent = '批量改分组（已选 ' + uuids.length + ' 台）';
+  const t = document.createElement('div');
+  t.className = 'gp-title';
+  t.textContent = title;
+  box.appendChild(t);
 
+  const actions = document.createElement('div');
+  actions.className = 'gp-actions';
+  const cancel = document.createElement('button');
+  cancel.className = 'gp-btn';
+  cancel.textContent = '取消';
+  const ok = document.createElement('button');
+  ok.className = 'gp-btn ok';
+  ok.textContent = '确认';
+  actions.appendChild(cancel);
+  actions.appendChild(ok);
+  box.appendChild(actions);
+
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+
+  function close() { closeCenterModal(); }
+  cancel.onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+
+  return { mask, box, ok, cancel, close };
+}
+
+function closeCenterModal() {
+  const m = document.getElementById('gpMask');
+  if (m && m.parentNode) m.parentNode.removeChild(m);
+}
+
+// 批量改分组：下拉选择已有分组
+async function batchChangeGroup() {
+  const uuids = [...state.selected];
+  if (!uuids.length) return;
   const sel = document.createElement('select');
   sel.className = 'gp-select';
   const optNone = document.createElement('option');
@@ -1551,31 +1579,12 @@ function showGroupPicker(uuids) {
     o.textContent = g;
     sel.appendChild(o);
   });
-
-  const row = document.createElement('div');
-  row.className = 'gp-actions';
-  const cancel = document.createElement('button');
-  cancel.className = 'gp-btn';
-  cancel.textContent = '取消';
-  const ok = document.createElement('button');
-  ok.className = 'gp-btn ok';
-  ok.textContent = '确认';
-  row.appendChild(cancel);
-  row.appendChild(ok);
-
-  box.appendChild(title);
-  box.appendChild(sel);
-  box.appendChild(row);
-  mask.appendChild(box);
-  document.body.appendChild(mask);
-
-  function closePicker() { closeGroupPicker(); }
-  cancel.onclick = closePicker;
-  mask.onclick = (e) => { if (e.target === mask) closePicker(); };
-  ok.onclick = async () => {
+  const m = openCenterModal('批量改分组（已选 ' + uuids.length + ' 台）');
+  m.box.insertBefore(sel, m.box.querySelector('.gp-actions'));
+  m.ok.onclick = async () => {
     const group = sel.value;
-    ok.disabled = true;
-    ok.textContent = '处理中…';
+    m.ok.disabled = true;
+    m.ok.textContent = '处理中…';
     try {
       const r = await fetch('/api/agents', {
         method: 'PATCH',
@@ -1585,67 +1594,109 @@ function showGroupPicker(uuids) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       state.selected.clear();
       requestRender();
-      closePicker();
+      m.close();
     } catch (e) {
       alert('批量改分组失败：' + e.message);
-      ok.disabled = false;
-      ok.textContent = '确认';
+      m.ok.disabled = false;
+      m.ok.textContent = '确认';
     }
   };
 }
-
-// 关闭分组选择浮层
-function closeGroupPicker() {
-  const m = document.getElementById('gpMask');
-  if (m && m.parentNode) m.parentNode.removeChild(m);
-}
-
 
 // 批量设备注
 async function batchSetRemark() {
   const uuids = [...state.selected];
   if (!uuids.length) return;
-  const v = prompt('批量设备注（已选 ' + uuids.length + ' 台）：', '');
-  if (v === null) return;
-  try {
-    const r = await fetch('/api/agents', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uuids, remark: v }),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    state.selected.clear();
-    requestRender();
-  } catch (e) {
-    alert('批量设备注失败：' + e.message);
-  }
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'gp-input';
+  inp.placeholder = '请输入设备注（留空 = 清空）';
+  const m = openCenterModal('批量设备注（已选 ' + uuids.length + ' 台）');
+  m.box.insertBefore(inp, m.box.querySelector('.gp-actions'));
+  setTimeout(() => inp.focus(), 0);
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); m.ok.click(); }
+  });
+  m.ok.onclick = async () => {
+    const remark = inp.value;
+    m.ok.disabled = true;
+    m.ok.textContent = '处理中…';
+    try {
+      const r = await fetch('/api/agents', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uuids, remark }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      state.selected.clear();
+      requestRender();
+      m.close();
+    } catch (e) {
+      alert('批量设备注失败：' + e.message);
+      m.ok.disabled = false;
+      m.ok.textContent = '确认';
+    }
+  };
 }
 
-// 批量设到期：YYYY-MM-DD；留空 = 清空到期。
+// 批量设到期：YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD 任一分隔符都识别；留空 = 清空
 async function batchSetExpire() {
   const uuids = [...state.selected];
   if (!uuids.length) return;
-  const v = prompt('批量设到期时间（已选 ' + uuids.length + ' 台）\n格式 YYYY-MM-DD（留空 = 清空到期）：', '');
-  if (v === null) return;
-  let expireAt = null;
-  if (v.trim()) {
-    const d = new Date(v.trim() + 'T23:59:59');
-    if (isNaN(d.getTime())) { alert('日期格式错误，应为 YYYY-MM-DD'); return; }
-    expireAt = Math.floor(d.getTime() / 1000);
-  }
-  try {
-    const r = await fetch('/api/agents', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uuids, expire_at: expireAt }),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    state.selected.clear();
-    requestRender();
-  } catch (e) {
-    alert('批量设到期失败：' + e.message);
-  }
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'gp-input';
+  inp.placeholder = 'YYYY-MM-DD 或 YYYY/MM/DD 或 YYYY.MM.DD（留空 = 清空）';
+  const m = openCenterModal('批量设到期时间（已选 ' + uuids.length + ' 台）');
+  m.box.insertBefore(inp, m.box.querySelector('.gp-actions'));
+  setTimeout(() => inp.focus(), 0);
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); m.ok.click(); }
+  });
+  m.ok.onclick = async () => {
+    const v = inp.value.trim();
+    let expireAt = null;
+    if (v) {
+      const d = parseFlexibleDate(v);
+      if (!d) {
+        alert('日期格式不正确：' + v + '\n示例：2027-3-3 / 2027.5.18 / 2027/11/01');
+        return;
+      }
+      expireAt = Math.floor(d.getTime() / 1000);
+    }
+    m.ok.disabled = true;
+    m.ok.textContent = '处理中…';
+    try {
+      const r = await fetch('/api/agents', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uuids, expire_at: expireAt }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      state.selected.clear();
+      requestRender();
+      m.close();
+    } catch (e) {
+      alert('批量设到期失败：' + e.message);
+      m.ok.disabled = false;
+      m.ok.textContent = '确认';
+    }
+  };
 }
+
+// 灵活日期解析：YYYY[-./]MM[-./]DD
+function parseFlexibleDate(s) {
+  const m = s.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/);
+  if (!m) return null;
+  const y = parseInt(m[1], 10);
+  const mo = parseInt(m[2], 10);
+  const d = parseInt(m[3], 10);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const date = new Date(y, mo - 1, d, 23, 59, 59);
+  if (isNaN(date.getTime())) return null;
+  return date;
+}
+
 
 // 从服务端拉取卸载命令并写入剪贴板（仅管理员；编辑弹窗里点「复制卸载命令」调用）。
 async function copyUninstallCommand() {

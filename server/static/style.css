@@ -549,7 +549,7 @@ button.danger:hover { background: var(--danger); color: #fff; }
 }
 .batch-bar .bb-btn:hover { background: #3a4150; border-color: #4b5563; color: #f8fafc; }
 .batch-bar .bb-btn.danger { color: #fca5a5; border-color: #7f1d2a; }
-.batch-bar .bb-btn.danger:hover { background: #5c1a24; border-color: #ef4444; color: #fecaca; }
+.batch-bar .bb-btn.danger:hover { background: #5c1a24; border-color: #ef4444; color: #fca5a5; }
 
 /* 卡片/列表复选框 */
 .sel-chk { cursor: pointer; width: 16px; height: 16px; accent-color: #7dd3fc; }
@@ -565,7 +565,7 @@ button.danger:hover { background: var(--danger); color: #fff; }
   font-size: 13px;
   margin-left: 4px;
 }
-.btn-del:hover { background: #5c1a24; border-color: #ef4444; color: #fecaca; }
+.btn-del:hover { background: #5c1a24; border-color: #ef4444; color: #fca5a5; }
 
 /* 批量改分组：下拉选择已有分组浮层 */
 .gp-mask {
@@ -594,3 +594,10 @@ button.danger:hover { background: var(--danger); color: #fff; }
 .gp-btn:hover { background: #3a4150; border-color: #4b5563; color: #f8fafc; }
 .gp-btn.ok { background: #2563eb; border-color: #2563eb; color: #fff; }
 .gp-btn.ok:hover { background: #3b82f6; border-color: #3b82f6; }
+
+.gp-input {
+  width: 100%; padding: 8px 10px; border-radius: 6px; font-size: 13px;
+  background: var(--bg-2, #252932); color: var(--text, #e6e8ee);
+  border: 1px solid var(--border, #2a2f3a);
+}
+.gp-input:focus { outline: none; border-color: #7dd3fc; box-shadow: 0 0 0 2px rgba(125,211,252,.18); }
