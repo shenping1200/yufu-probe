@@ -207,3 +207,52 @@ func trafficOf(t *testing.T, db *sql.DB, uuid, month string) float64 {
 	}
 	return rx
 }
+
+// TestSnapshotMonthRollover 是面板视角的回归测试。
+//
+// 面板 /api/agents 与 WS 广播读的都是 live.Snapshot()（内存），不是 DB。
+// 历史 bug 正是"DB 按月分区没问题、但 Snapshot 返回的 rx_month 跨月不归零"，
+// 导致用户看到的本月流量一直涨、只有重启容器才像重置过。
+// 本测试锁死这条真实读数路径：跨月后 Snapshot 必须给出 0。
+func TestSnapshotMonthRollover(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "probe.db"))
+	if err != nil {
+		t.Fatalf("初始化测试库失败: %v", err)
+	}
+	defer db.Close()
+
+	s := NewServerState()
+	s.lastMonth = "2026-07"
+
+	// 两台机器在 7 月各自跑了一些流量
+	for _, u := range []string{"a", "b"} {
+		s.ApplyReport(AgentReport{UUID: u, RxDelta: 2048, TxDelta: 1024}, "", "")
+	}
+	s.Flush(db, "2026-07")
+
+	for _, row := range s.Snapshot() {
+		if row.RxMonth == 0 {
+			t.Fatalf("7 月内应有流量，%s 的 RxMonth 却是 0", row.UUID)
+		}
+	}
+
+	// 跨入 8 月：面板读数必须立刻归零（无需重启进程）
+	s.Flush(db, "2026-08")
+
+	snap := s.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("快照应含 2 台机器，实际 %d", len(snap))
+	}
+	for _, row := range snap {
+		if row.RxMonth != 0 || row.TxMonth != 0 {
+			t.Fatalf("跨月后面板读数应归零，%s 实际 rx=%v tx=%v", row.UUID, row.RxMonth, row.TxMonth)
+		}
+	}
+
+	// 7 月历史仍在库里，可供后续查询/对账
+	for _, u := range []string{"a", "b"} {
+		if got := trafficOf(t, db, u, "2026-07"); got != 2048 {
+			t.Fatalf("%s 的 7 月历史应保留 2048，实际 %v", u, got)
+		}
+	}
+}
