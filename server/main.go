@@ -47,7 +47,7 @@ func main() {
 	}
 	hub := NewHub()
 	// 启动时把 DB 全量载入内存，作为实时状态基盘
-	live.LoadFromDB(db, time.Now().Format("2006-01"))
+	live.LoadFromDB(db, curMonth())
 	// 启动后立即清理一次"幽灵孤儿"（online=0 且 last_seen=0 的僵尸记录），
 	// 防止历史上误入库的离线孤儿在面板冒出来。
 	live.CleanupStale(db)
@@ -65,7 +65,7 @@ func main() {
 	go func() {
 		t := time.NewTicker(2 * time.Second)
 		for range t.C {
-			live.Flush(db, time.Now().Format("2006-01"))
+			live.Flush(db, curMonth())
 		}
 	}()
 	go func() {

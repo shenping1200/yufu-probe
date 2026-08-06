@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -113,4 +115,95 @@ func TestApplyReportEphemeralTraffic(t *testing.T) {
 	if got := s.agents["ephemeral-1"].TxMonth; got != 2048+256 {
 		t.Fatalf("第二次上报 TxMonth 累加错误：%v", got)
 	}
+}
+
+// TestMonthKeyBeijingTimezone 验证月份键固定按北京时间（UTC+8）切分。
+// 这是"每月 1 日 0 点重置流量"的时间锚点：容器基础镜像是 alpine 且不带 tzdata，
+// 若用 time.Local 会退化成 UTC，重置会推迟到北京时间早上 8 点才发生。
+func TestMonthKeyBeijingTimezone(t *testing.T) {
+	// 北京时间 2026-08-01 00:30 == UTC 2026-07-31 16:30
+	// 按北京时间应已进入 8 月；按 UTC 会错判成 7 月。
+	justAfterRollover := time.Date(2026, 7, 31, 16, 30, 0, 0, time.UTC)
+	if got := monthOf(justAfterRollover); got != "2026-08" {
+		t.Fatalf("北京时间 8/1 00:30 应属 2026-08，实际 %s（说明时区没按东八区切）", got)
+	}
+
+	// 北京时间 2026-07-31 23:30 == UTC 2026-07-31 15:30，仍属 7 月
+	justBeforeRollover := time.Date(2026, 7, 31, 15, 30, 0, 0, time.UTC)
+	if got := monthOf(justBeforeRollover); got != "2026-07" {
+		t.Fatalf("北京时间 7/31 23:30 应属 2026-07，实际 %s", got)
+	}
+
+	// curMonth 必须与 monthOf(now) 同源
+	if curMonth() != monthOf(time.Now()) {
+		t.Fatalf("curMonth 与 monthOf 口径不一致")
+	}
+}
+
+// TestFlushMonthRollover 验证跨月重置：
+//  1. 跨月时所有 agent 内存态的本月流量清零（面板立刻从 0 重新计，不必重启容器）；
+//  2. 跨月那一轮的残余增量仍记到【上一个月】；
+//  3. 上个月的 traffic_monthly 行原样保留（历史可查）；
+//  4. 新月份的流量从 0 重新累加，写入新月份的行。
+func TestFlushMonthRollover(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "probe.db"))
+	if err != nil {
+		t.Fatalf("初始化测试库失败: %v", err)
+	}
+	defer db.Close()
+
+	s := NewServerState()
+	s.lastMonth = "2026-07"
+
+	// 7 月已累计 5000，本轮又有 100 的残余增量待落库
+	s.ApplyReport(AgentReport{UUID: "u1", RxDelta: 100, TxDelta: 100}, "", "")
+	s.agents["u1"].RxMonth = 5000
+	s.agents["u1"].TxMonth = 5000
+
+	// 跨入 8 月
+	s.Flush(db, "2026-08")
+
+	if got := s.agents["u1"].RxMonth; got != 0 {
+		t.Fatalf("跨月后内存态 RxMonth 应清零，实际 %v", got)
+	}
+	if got := s.agents["u1"].TxMonth; got != 0 {
+		t.Fatalf("跨月后内存态 TxMonth 应清零，实际 %v", got)
+	}
+	if s.lastMonth != "2026-08" {
+		t.Fatalf("lastMonth 应推进到 2026-08，实际 %s", s.lastMonth)
+	}
+	if got := trafficOf(t, db, "u1", "2026-07"); got != 100 {
+		t.Fatalf("跨月残余增量应记入 2026-07，实际 %v", got)
+	}
+	if got := trafficOf(t, db, "u1", "2026-08"); got != 0 {
+		t.Fatalf("跨月那一轮不应写入 2026-08，实际 %v", got)
+	}
+
+	// 8 月正常累加
+	s.ApplyReport(AgentReport{UUID: "u1", RxDelta: 300, TxDelta: 300}, "", "")
+	s.Flush(db, "2026-08")
+
+	if got := s.agents["u1"].RxMonth; got != 300 {
+		t.Fatalf("新月份应从 0 重新累加，实际 %v", got)
+	}
+	if got := trafficOf(t, db, "u1", "2026-08"); got != 300 {
+		t.Fatalf("2026-08 行应为 300，实际 %v", got)
+	}
+	if got := trafficOf(t, db, "u1", "2026-07"); got != 100 {
+		t.Fatalf("上月历史必须保留为 100，实际 %v", got)
+	}
+}
+
+// trafficOf 读取指定机器指定月份的 rx_total（不存在返回 0）
+func trafficOf(t *testing.T, db *sql.DB, uuid, month string) float64 {
+	t.Helper()
+	var rx float64
+	err := db.QueryRow(`SELECT rx_total FROM traffic_monthly WHERE uuid=? AND year_month=?`, uuid, month).Scan(&rx)
+	if err == sql.ErrNoRows {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("查询 traffic_monthly 失败: %v", err)
+	}
+	return rx
 }

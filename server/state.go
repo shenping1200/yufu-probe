@@ -21,6 +21,11 @@ type ServerState struct {
 	// groups 是「分组名注册表」，记录所有已存在的自定义分组名（含 0 成员的空组），
 	// 用于标签条渲染与编辑下拉。key=分组名，value=创建时间（Unix 秒）。
 	groups map[string]int64
+	// lastMonth 记录内存态当前归属的月份键（格式 2006-01，北京时间口径）。
+	// Flush 每次带入"此刻的月份"，一旦与本字段不同即判定跨月：
+	// 先用旧月份把残余流量增量落库，再把所有 agent 的本月流量清零。
+	// 空串表示尚未初始化（进程刚起、还没 LoadFromDB / Flush 过）。
+	lastMonth string
 }
 
 type trafficDelta struct {
@@ -76,6 +81,9 @@ func (s *ServerState) LoadFromDB(db *sql.DB, month string) {
 	for n := range seenGroups {
 		s.groups[n] = time.Now().Unix()
 	}
+	// 记录内存态归属的月份：载入的本月流量就是这个月的，
+	// 后续 Flush 一旦发现月份变了，即触发跨月清零。
+	s.lastMonth = month
 	s.mu.Unlock()
 }
 
@@ -372,7 +380,17 @@ func (s *ServerState) Snapshot() []AgentRow {
 	return out
 }
 
-// Flush 把脏数据与流量增量落库（由单一 goroutine 周期调用，避免并发写）
+// Flush 把脏数据与流量增量落库（由单一 goroutine 周期调用，避免并发写）。
+//
+// month 由调用方传入"此刻的月份键"（北京时间口径，见 clock.go 的 curMonth）。
+// 本方法同时承担【跨月重置】职责：一旦 month 与内存记录的 lastMonth 不同，
+// 说明刚跨过北京时间每月 1 日 0 点，于是：
+//  1. 本轮残余的流量增量仍记到【上一个月】（误差最多一个 Flush 周期即 2 秒，可忽略）；
+//  2. 把所有 agent 内存态的 RxMonth/TxMonth 清零，面板「本月流量」立刻从 0 重新计；
+//  3. traffic_monthly 里上个月的行原样保留，历史随时可查。
+//
+// 这样即使服务连续数月不重启，也能在 1 日 0 点准点重置——
+// 修复前内存态只加不减，必须重启容器才会"看起来"归零。
 func (s *ServerState) Flush(db *sql.DB, month string) {
 	s.mu.Lock()
 	uuids := make([]string, 0, len(s.dirty))
@@ -382,7 +400,31 @@ func (s *ServerState) Flush(db *sql.DB, month string) {
 	s.dirty = make(map[string]bool)
 	tmap := s.traffic
 	s.traffic = make(map[string]trafficDelta)
+
+	// —— 跨月检测 ——
+	writeMonth := month // 本轮残余增量写入哪个月
+	rolledFrom := ""    // 非空表示发生了跨月
+	rolledCount := 0
+	switch {
+	case s.lastMonth == "":
+		// 进程刚起、还没有过基准（正常情况下 LoadFromDB 已设过）
+		s.lastMonth = month
+	case s.lastMonth != month:
+		rolledFrom = s.lastMonth
+		writeMonth = s.lastMonth
+		for _, a := range s.agents {
+			a.RxMonth = 0
+			a.TxMonth = 0
+			rolledCount++
+		}
+		s.lastMonth = month
+	}
 	s.mu.Unlock()
+
+	if rolledFrom != "" {
+		log.Printf("[probe] 跨月重置：%s -> %s（北京时间），已清零 %d 台机器的本月流量，%s 的历史数据保留在 traffic_monthly",
+			rolledFrom, month, rolledCount, rolledFrom)
+	}
 
 	for _, u := range uuids {
 		s.mu.RLock()
@@ -393,7 +435,7 @@ func (s *ServerState) Flush(db *sql.DB, month string) {
 		}
 		UpsertAgent(db, *a)
 		if d, ok := tmap[u]; ok && (d.rx > 0 || d.tx > 0) {
-			AddTraffic(db, u, month, d.rx, d.tx)
+			AddTraffic(db, u, writeMonth, d.rx, d.tx)
 		}
 	}
 }

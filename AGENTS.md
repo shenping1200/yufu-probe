@@ -113,6 +113,12 @@ GitHub Actions: "Build and Push Server Image"
 - **WS 指令**：agent 端只认 `shell_open/input/resize/close`，**没有**卸载/停止类指令；卸载只能走客户端执行 `uninstall-agent.sh`。
 - **批量更新用部分更新函数**：`SetAgentGroup(db,uuid,group)` / `SetAgentRemark` / `SetAgentExpire` 各自只 `UPDATE` 对应单列，避免 `UpdateAgent` 全量覆盖把备注/到期清空。`state.PatchAgentFields` 在锁内只改非 nil 字段。
 - **鉴权**：`/api/agents`（增删改）需 `requireAdmin`；`/api/agents/{uuid}` 用 `requireAgentTokenOrAdmin`（admin session cookie 或 agent token 任一放行）。install/uninstall command 接口需 admin。
+- **月度流量 / 每月 1 日重置（重要）**：本月流量存 `traffic_monthly` 表，主键 `(uuid, year_month)`，`year_month` 格式 `2006-01`。`AddTraffic` 按月累加、跨月自然写新行，**旧月行永久保留为历史**（`db.go` 有按 uuid 查历史的接口）。
+  - **月份键唯一口径是 `server/clock.go` 的 `curMonth()`，固定东八区（北京时间）**。不要再写裸 `time.Now().Format("2006-01")`：容器基础镜像 alpine 不带 tzdata，`time.Local` 会退化成 UTC，重置点会漂到北京时间早上 8 点。
+  - 面板读数走 `live.Snapshot()`（**内存**，不是 DB），所以内存态 `AgentRow.RxMonth/TxMonth` 必须跟着跨月清零，否则服务不重启就永远不归零 —— 这正是历史 bug。修复在 `state.Flush`：用 `lastMonth` 与传入 `month` 比对，跨月时先把本轮残余增量记到**旧月**，再把所有 agent 的 `RxMonth/TxMonth` 置 0，并打一行 `跨月重置：X -> Y` 日志。
+  - `agents` 表**没有** rx_month/tx_month 列，清零内存无需额外落库。
+  - 回归测试：`TestFlushMonthRollover`、`TestMonthKeyBeijingTimezone`（`server/state_test.go`）。
+
 - **命令生成**：`/api/install-command` 与 `/api/uninstall-command` 都返回 `{command}`，内容是从 `install-agent.sh` / `uninstall-agent.sh` 拼 WS URL + Agent Token。前端"生成安装/卸载命令"按钮同时拉这两个接口，弹窗里两块文本框各自带复制按钮。
 
 ---
@@ -124,7 +130,8 @@ GitHub Actions: "Build and Push Server Image"
 3. **UTF-8 Edit 陷阱**（§5 开头）：用 Python 做 UTF-8 安全替换。
 4. **缓存戳**：改了 `app.js`/`style.css` 一定要把 `index.html` 里对应的 `?v=N` +1，否则浏览器旧缓存。
 5. **caddy 需 Host 头**才能本地 curl 验证（§4）。
-6. 中心 VPS `/tmp` 下残留 `build*.log`、`ck*.txt`、`*.json` 及旧 `probe.db.bak.*` 备份，待清理（**不影响运行**，清理前先确认备份可删）。
+6. **月度流量不重置**（已修，见 §6）：症状是面板「本月流量」跨月后继续累加。根因是面板读内存态而内存只加不减；另有 UTC 时区导致重置点偏移 8 小时。改动点 `server/clock.go` + `state.Flush`。
+7. 中心 VPS `/tmp` 下残留 `build*.log`、`ck*.txt`、`*.json` 及旧 `probe.db.bak.*` 备份，待清理（**不影响运行**，清理前先确认备份可删）。
 
 ---
 

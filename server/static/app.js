@@ -650,12 +650,12 @@ function cardInner(a) {
       <div class="traffic-item">
         <div class="traffic-label">本月下载 ↓</div>
         <div class="traffic-value down">${fmtBytes(a.rx_month)}</div>
-        <div class="traffic-sub">每月1日重置</div>
+        <div class="traffic-sub">每月1日0点重置</div>
       </div>
       <div class="traffic-item">
         <div class="traffic-label">本月上传 ↑</div>
         <div class="traffic-value up">${fmtBytes(a.tx_month)}</div>
-        <div class="traffic-sub">自然月累计</div>
+        <div class="traffic-sub">北京时间自然月</div>
       </div>
     </div>`;
 }
