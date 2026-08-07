@@ -590,6 +590,19 @@ async function refreshAgents() {
   } catch (e) {}
 }
 
+// 批量操作成功后，立即把改动回写到本地 state.agents，让界面即时反映结果。
+// 为什么必须回写：服务端在响应返回时就已经改好了 SQLite 与内存态，但面板渲染
+// 读的是浏览器本地的 state.agents；若只调 requestRender() 会拿旧数据重绘，
+// 得等下一帧 WS 全量快照推来才更新。机器多时该快照很大（千台级接近 1MB/帧）、
+// 客户端消费慢，肉眼可见能延迟数十秒——表现就是"改了分组没马上过去"。
+// 单机编辑（editSave）一直是这么做的，这里与之保持一致；WS 后续推送仍作兜底校正。
+function patchLocalAgents(uuids, patch) {
+  const set = new Set(uuids);
+  for (const a of state.agents) {
+    if (set.has(a.uuid)) Object.assign(a, patch);
+  }
+}
+
 // 单张卡片 HTML（分组由渲染层统一处理，这里只画卡片本身）
 function cardInner(a) {
   const alias = a.alias || a.hostname || a.uuid.slice(0, 8);
@@ -1628,6 +1641,7 @@ async function batchChangeGroup() {
         body: JSON.stringify({ uuids, group }),
       });
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      patchLocalAgents(uuids, { group });
       state.selected.clear();
       requestRender();
       m.close();
@@ -1664,6 +1678,7 @@ async function batchSetRemark() {
         body: JSON.stringify({ uuids, remark }),
       });
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      patchLocalAgents(uuids, { remark });
       state.selected.clear();
       requestRender();
       m.close();
@@ -1709,6 +1724,7 @@ async function batchSetExpire() {
         body: JSON.stringify({ uuids, expire_at: expireAt }),
       });
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      patchLocalAgents(uuids, { expire_at: expireAt });
       state.selected.clear();
       requestRender();
       m.close();
