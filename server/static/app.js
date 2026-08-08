@@ -166,14 +166,23 @@ document.getElementById('logoutBtn').onclick = async () => {
   showLogin();
 };
 
+// 最近一次已应用的 agents 广播序列号；小于它的帧视为过期直接丢弃，
+// 避免后端发送缓冲里积压的旧快照覆盖掉前端乐观更新（详见 hub.go 的 drop-oldest 修复）。
+let lastAgentsSeq = 0;
+
 // ---------- WebSocket ----------
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(proto + '://' + location.host + '/ws/viewer');
   state.ws = ws;
+  ws.onopen = () => { lastAgentsSeq = 0; };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'agents') {
+      // 序列号去重：只接受比已应用帧更新的快照，过期/重复帧直接忽略，
+      // 彻底消除「改完分组后被旧快照打回原组」的回跳。
+      if (typeof msg.seq === 'number' && msg.seq <= lastAgentsSeq) return;
+      lastAgentsSeq = msg.seq;
       state.agents = msg.data;
       if (Array.isArray(msg.groups)) state.groups = msg.groups;
       updateHistory(msg.data);

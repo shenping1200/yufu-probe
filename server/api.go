@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -66,10 +67,16 @@ type AgentReport struct {
 // 由 main.go 的定时 ticker 周期调用（不再在每条上报里调用），
 // 因此广播频率固定为 1 次/秒，与客户端数量解耦。
 // 同时携带当前「分组名注册表」，使前端能正确渲染「+ 新建分组」等空分组。
+// broadcastSeq 是每次向 viewer 广播全量快照时自增的序列号。
+// 前端据此丢弃过期/重复帧：只有 seq 严格大于已应用 seq 的帧才会覆盖本地状态，
+// 这样即便后端发送缓冲积压先推来了改动前的旧快照，也不会把前端的乐观更新打回原状。
+var broadcastSeq uint64
+
 func broadcastAgents(hub *Hub) {
 	list := live.Snapshot()
 	groups := live.Groups()
-	payload, err := json.Marshal(map[string]interface{}{"type": "agents", "data": list, "groups": groups})
+	seq := atomic.AddUint64(&broadcastSeq, 1)
+	payload, err := json.Marshal(map[string]interface{}{"type": "agents", "data": list, "groups": groups, "seq": seq})
 	if err != nil {
 		return
 	}
