@@ -66,7 +66,16 @@ func (h *Hub) findAgent(uuid string) *Client {
 	return h.agents[uuid]
 }
 
-// BroadcastToViewers 向所有已连接的 viewer 推送消息
+// BroadcastToViewers 向所有已连接的 viewer 推送消息。
+//
+// 推送的是「全量最新状态快照」，语义上只有最后一帧有价值——晚到的旧帧不仅
+// 无用，还会把界面打回过期状态。因此当 viewer 的发送队列已满（弱网 / 机器多
+// 导致单帧近 1MB，客户端消费不过来）时，采取 drop-oldest：
+// 丢掉队列里最旧的一帧，把最新帧挤进去。
+//
+// 这里原先是 drop-newest（满了就 default 丢弃当前帧），方向恰好反了：
+// 队列里会一直压着一批陈旧快照慢慢外推，管理员改完分组后，先收到的是
+// 「改动之前」生成的旧帧，界面上机器会跳回原分组，要等整队旧帧排空才生效。
 func (h *Hub) BroadcastToViewers(payload []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -74,6 +83,16 @@ func (h *Hub) BroadcastToViewers(payload []byte) {
 		select {
 		case c.send <- payload:
 		default:
+			// 队列已满：先弹掉最旧的一帧，再尝试放入最新帧。
+			// 两步都用非阻塞写法，避免 writePump 正好消费时相互卡住。
+			select {
+			case <-c.send:
+			default:
+			}
+			select {
+			case c.send <- payload:
+			default:
+			}
 		}
 	}
 }
