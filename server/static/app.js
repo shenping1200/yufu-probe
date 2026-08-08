@@ -14,6 +14,9 @@ const state = {
   maskIP: localStorage.getItem('yufu_mask_ip') === '1',
   // 当前选中的分组筛选（'' = 全部，'⚠ 离线' = 离线，否则为自定义组名）
   currentGroup: '',
+  // 分页：每页显示数量（数字 或 'all'）与当前页（1 基）；选择持久化到 localStorage
+  pageSize: (localStorage.getItem('yufu_page_size') === 'all' ? 'all' : (parseInt(localStorage.getItem('yufu_page_size'), 10) || 'all')),
+  page: 1,
   // 折叠世界地图开关（仅本浏览器，localStorage 持久化，默认关）
   mapOpen: localStorage.getItem('yufu_map_open') === '1',
   // 角色：admin（管理员） / visitor（访客只读）。由 /api/me 返回。
@@ -398,6 +401,7 @@ function render() {
   renderGroupTabs();
   populateGroupSelect();
   renderSummary();
+  renderPager();
   if (state.viewMode === 'list') {
     renderList();
   } else {
@@ -451,6 +455,80 @@ function filteredAgents() {
   if (g === OFFLINE_GROUP) return state.agents.filter(a => !a.online);
   if (g === '未分组') return state.agents.filter(a => a.online && !a.group);
   return state.agents.filter(a => a.online && a.group === g);
+}
+
+// 当前页要渲染的机器列表：在 filteredAgents() 基础上按 pageSize/page 切片。
+// 统计（renderSummary）、全选（selectAll）仍基于 filteredAgents() 全量，不受分页影响。
+function currentPageList() {
+  const list = filteredAgents();
+  const ps = state.pageSize;
+  if (ps === 'all' || !ps || list.length <= ps) return list;
+  const pageCount = Math.max(1, Math.ceil(list.length / ps));
+  const page = Math.min(Math.max(1, state.page || 1), pageCount);
+  const start = (page - 1) * ps;
+  return list.slice(start, start + ps);
+}
+
+// 翻页工具条：每页数量（10/20/50/全部/自定义）+ 上一页/下一页。
+// 用签名守卫，仅当 pageSize/page/total/pageCount 变化时才重建 DOM，
+// 避免每条 WS 广播都重建、打断自定义输入框的焦点。
+let lastPagerSig = '';
+function renderPager() {
+  const bar = document.getElementById('pagerBar');
+  if (!bar) return;
+  const list = filteredAgents();
+  const total = list.length;
+  const ps = state.pageSize;
+  const pageCount = ps === 'all' ? 1 : Math.max(1, Math.ceil(total / ps));
+  if (state.page > pageCount) state.page = pageCount;
+  if (state.page < 1) state.page = 1;
+  const sig = [ps, state.page, total, pageCount].join('|');
+  if (sig === lastPagerSig) return;
+  lastPagerSig = sig;
+  const cur = state.page;
+  const sizeBtn = (s) => {
+    const label = s === 'all' ? '全部' : String(s);
+    const active = ps === s ? ' active' : '';
+    return `<button class="pg-size${active}" data-size="${s}">${label}</button>`;
+  };
+  const customVal = (ps !== 'all' && ![10, 20, 50].includes(ps)) ? ps : '';
+  let html = `<div class="pg-sizes">每页：<span class="pg-size-wrap">${[10, 20, 50, 'all'].map(sizeBtn).join('')}</span><input class="pg-custom" type="number" min="1" placeholder="自定义" value="${customVal}"></div>`;
+  if (ps !== 'all' && total > ps) {
+    html += `<div class="pg-nav"><button class="pg-prev" ${cur <= 1 ? 'disabled' : ''}>上一页</button><span class="pg-info">第 ${cur} / ${pageCount} 页 · 共 ${total} 台</span><button class="pg-next" ${cur >= pageCount ? 'disabled' : ''}>下一页</button></div>`;
+  } else {
+    html += `<div class="pg-nav"><span class="pg-info">共 ${total} 台</span></div>`;
+  }
+  bar.innerHTML = html;
+  bar.querySelectorAll('.pg-size').forEach(b => {
+    b.onclick = () => {
+      const s = b.dataset.size;
+      state.pageSize = s === 'all' ? 'all' : Number(s);
+      state.page = 1;
+      agentsScrollEl.scrollTop = 0;
+      localStorage.setItem('yufu_page_size', String(state.pageSize));
+      lastPagerSig = '';
+      requestRender();
+    };
+  });
+  const custom = bar.querySelector('.pg-custom');
+  if (custom) {
+    custom.onchange = () => {
+      const n = parseInt(custom.value, 10);
+      if (n && n > 0) {
+        state.pageSize = n;
+        state.page = 1;
+        agentsScrollEl.scrollTop = 0;
+        localStorage.setItem('yufu_page_size', String(n));
+        lastPagerSig = '';
+        requestRender();
+      } else { custom.value = ''; }
+    };
+    custom.onkeydown = (e) => { if (e.key === 'Enter') custom.blur(); };
+  }
+  const prev = bar.querySelector('.pg-prev');
+  if (prev) prev.onclick = () => { if (state.page > 1) { state.page--; agentsScrollEl.scrollTop = 0; lastPagerSig = ''; requestRender(); } };
+  const next = bar.querySelector('.pg-next');
+  if (next) next.onclick = () => { if (state.page < pageCount) { state.page++; agentsScrollEl.scrollTop = 0; lastPagerSig = ''; requestRender(); } };
 }
 
 // 渲染顶部筛选标签条：全部(总数) / 已注册自定义组(数量) / 未分组 / ⚠ 离线(数量) / + 新建分组
@@ -510,6 +588,7 @@ function renderGroupTabs() {
     if (btn.id === 'newGroupBtn') return;
     btn.onclick = () => {
       state.currentGroup = btn.dataset.group;
+      state.page = 1;
       requestRender();
     };
   });
@@ -546,7 +625,7 @@ async function groupRename(oldName) {
       body: JSON.stringify({ name: newName }),
     });
     if (!r.ok) { alert('重命名失败：HTTP ' + r.status); return; }
-    if (state.currentGroup === oldName) state.currentGroup = newName;
+    if (state.currentGroup === oldName) { state.currentGroup = newName; state.page = 1; }
     await refreshAgents();
   } catch (e) {
     alert('重命名失败：' + e.message);
@@ -559,7 +638,7 @@ async function groupDelete(name) {
   try {
     const r = await fetch('/api/groups/' + encodeURIComponent(name), { method: 'DELETE' });
     if (!r.ok) { alert('删除失败：HTTP ' + r.status); return; }
-    if (state.currentGroup === name) state.currentGroup = '';
+    if (state.currentGroup === name) { state.currentGroup = ''; state.page = 1; }
     await refreshAgents();
   } catch (e) {
     alert('删除失败：' + e.message);
@@ -715,7 +794,7 @@ function cardCols() {
 }
 function renderCard() {
   const scroll = agentsScrollEl;
-  const list = filteredAgents();
+  const list = currentPageList();
   const saved = scroll.scrollTop;
   if (list.length === 0) {
     scroll.innerHTML = `<div class="empty-tip">该分组下暂无客户端</div>`;
@@ -742,7 +821,7 @@ function renderCardWindow(scrollTop) {
   const scroll = agentsScrollEl;
   const grid = scroll.querySelector('.agents-grid.virtual');
   if (!grid) return;
-  const list = filteredAgents();
+  const list = currentPageList();
   const cols = cardCols();
   const rowH = CARD_H + CARD_GAP;
   const rows = Math.ceil(list.length / cols);
@@ -856,7 +935,7 @@ function listRowHTML(a) {
 const LIST_ROW_H = 64;
 function renderList() {
   const scroll = agentsScrollEl;
-  const list = filteredAgents();
+  const list = currentPageList();
   const saved = scroll.scrollTop;
   const thead = `
     <thead>
@@ -887,7 +966,7 @@ function renderListWindow(scrollTop) {
   const table = scroll.querySelector('table');
   const tbody = table && table.querySelector('tbody');
   if (!tbody) return;
-  const list = filteredAgents();
+  const list = currentPageList();
   const theadH = (table.querySelector('thead') && table.querySelector('thead').offsetHeight) || 0;
   const top = scrollTop - theadH;
   const start = Math.max(0, Math.floor(top / LIST_ROW_H) - 1);

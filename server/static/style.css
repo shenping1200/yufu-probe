@@ -601,3 +601,36 @@ button.danger:hover { background: var(--danger); color: #fff; }
   border: 1px solid var(--border, #2a2f3a);
 }
 .gp-input:focus { outline: none; border-color: #7dd3fc; box-shadow: 0 0 0 2px rgba(125,211,252,.18); }
+
+/* ---------- 翻页工具条 ---------- */
+.pager-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap;
+  padding: 0 28px 12px;
+}
+.pg-sizes { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
+.pg-size-wrap { display: inline-flex; gap: 6px; }
+.pg-size {
+  padding: 6px 12px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 16px;
+  background: var(--bg-2); color: var(--text-2); cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.pg-size:hover { border-color: var(--primary); color: var(--text); }
+.pg-size.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.pg-custom {
+  width: 64px; padding: 6px 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 16px;
+  background: var(--bg-2); color: var(--text); outline: none;
+}
+.pg-custom:focus { border-color: var(--primary); }
+.pg-nav { display: inline-flex; align-items: center; gap: 10px; }
+.pg-nav button {
+  padding: 6px 12px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 16px;
+  background: var(--bg-2); color: var(--text); cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.pg-nav button:hover:not(:disabled) { border-color: var(--primary); color: var(--text); }
+.pg-nav button:disabled { opacity: .45; cursor: not-allowed; }
+.pg-info { font-size: 12px; color: var(--text-2); white-space: nowrap; }
