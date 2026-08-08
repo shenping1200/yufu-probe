@@ -987,12 +987,12 @@ function bindListEvents(root) {
   bindAliasInputs('.list-name');
   const sa = root.querySelector('#selectAllChk');
   if (sa) {
-    const list = filteredAgents();
+    const list = currentPageList();
     sa.checked = list.length > 0 && list.every(a => state.selected.has(a.uuid));
     sa.onchange = (e) => {
       e.stopPropagation();
       const checked = sa.checked;
-      filteredAgents().forEach(a => {
+      currentPageList().forEach(a => {
         if (checked) state.selected.add(a.uuid);
         else state.selected.delete(a.uuid);
       });
