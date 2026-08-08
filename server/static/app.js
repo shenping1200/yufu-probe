@@ -170,6 +170,15 @@ document.getElementById('logoutBtn').onclick = async () => {
 // 避免后端发送缓冲里积压的旧快照覆盖掉前端乐观更新（详见 hub.go 的 drop-oldest 修复）。
 let lastAgentsSeq = 0;
 
+// 分组乐观覆盖锁：批量/单台改分组成功后，在收到服务端确认（seq>floor 且 group 一致）前，
+// 任何陈旧广播帧都改不回它的分组，彻底消除「改完分组机器跳回原组」的回跳（seq 去重的兜底）。
+const groupOverrides = {};
+function pinGroupOverrides(uuids, group) {
+  const floor = lastAgentsSeq;
+  const expires = Date.now() + 15000;
+  for (const u of uuids) groupOverrides[u] = { group, floor, expires };
+}
+
 // ---------- WebSocket ----------
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -183,6 +192,16 @@ function connectWS() {
       // 彻底消除「改完分组后被旧快照打回原组」的回跳。
       if (typeof msg.seq === 'number' && msg.seq <= lastAgentsSeq) return;
       lastAgentsSeq = msg.seq;
+      // 应用分组乐观覆盖锁：服务端未确认前保持本地分组，陈旧帧打不回原组
+      for (const a of msg.data) {
+        const ov = groupOverrides[a.uuid];
+        if (!ov) continue;
+        if (Date.now() > ov.expires || (msg.seq > ov.floor && a.group === ov.group)) {
+          delete groupOverrides[a.uuid];
+        } else {
+          a.group = ov.group;
+        }
+      }
       state.agents = msg.data;
       if (Array.isArray(msg.groups)) state.groups = msg.groups;
       updateHistory(msg.data);
@@ -800,7 +819,7 @@ document.getElementById('editSave').onclick = async () => {
     body: JSON.stringify({ name, group, remark, expire_at: expireAt }),
   });
   const a = state.agents.find(x => x.uuid === editUUID);
-  if (a) { a.alias = name; a.group = group; a.remark = remark; a.expire_at = expireAt; }
+  if (a) { a.alias = name; a.group = group; a.remark = remark; a.expire_at = expireAt; groupOverrides[editUUID] = { group, floor: lastAgentsSeq, expires: Date.now() + 15000 }; }
   closeEdit();
   render();
   if (state.currentUUID === editUUID) drawDetail();
@@ -1651,6 +1670,7 @@ async function batchChangeGroup() {
       });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       patchLocalAgents(uuids, { group });
+      pinGroupOverrides(uuids, group);
       state.selected.clear();
       requestRender();
       m.close();
