@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -104,9 +105,22 @@ func (c *Client) safeWrite(payload []byte) error {
 	return c.conn.WriteMessage(websocket.TextMessage, payload)
 }
 
-// writePump 持续把 send 通道的消息写出到连接
+// viewerWriteTimeout 单帧写出超时。压缩后的全量快照约 285KB，30 秒还写不完
+// 说明这个 viewer 已经彻底跟不上（断网、链路极慢或标签页被冻结）。
+// 此时直接断开让它按前端的重连逻辑重来，好过让 writePump 永久阻塞在一次写上——
+// 阻塞期间 drop-oldest 换不动队列，界面只会停在越来越旧的快照上。
+const viewerWriteTimeout = 30 * time.Second
+
+// writePump 持续把 send 通道的消息写出到连接。
+// 目前只有 viewer 连接使用（agent 与终端方向走带锁的 safeWrite 直写），
+// 因此这里设置写超时不会影响 agent 连接上的终端指令下发。
+// 写失败时关闭连接，让 handler 侧阻塞中的 ReadMessage 立即返回并注销该 viewer。
 func (c *Client) writePump() {
+	defer c.conn.Close()
 	for msg := range c.send {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(viewerWriteTimeout)); err != nil {
+			return
+		}
 		if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			return
 		}
