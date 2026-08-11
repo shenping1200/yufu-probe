@@ -601,6 +601,34 @@ button.danger:hover { background: var(--danger); color: #fff; }
   border: 1px solid var(--border, #2a2f3a);
 }
 .gp-input:focus { outline: none; border-color: #7dd3fc; box-shadow: 0 0 0 2px rgba(125,211,252,.18); }
+.gp-hint { font-size: 12px; color: var(--text-2, #9aa3b2); line-height: 1.5; margin-bottom: 10px; }
+.gp-row { display: flex; gap: 12px; margin-top: 8px; }
+.gp-row label { flex: 1; font-size: 12px; color: var(--text-2, #9aa3b2); display: flex; flex-direction: column; gap: 4px; }
+.gp-num { width: 100%; }
+/* 批量命令弹窗比普通下拉弹窗更宽，容得下多行脚本输入 */
+#gpMask .gp-box { width: 460px; max-width: 92vw; }
+#gpMask textarea.gp-input { resize: vertical; font-family: ui-monospace,Menlo,Consolas,monospace; line-height: 1.5; }
+
+/* ---------- 批量命令结果表格 ---------- */
+.exec-title { font-size: 12px; color: var(--text-2, #9aa3b2); margin: 4px 0 10px; }
+.exec-results { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border, #2a2f3a); border-radius: 8px; }
+.exec-row { border-bottom: 1px solid var(--border, #2a2f3a); }
+.exec-row:last-child { border-bottom: none; }
+.exec-summary {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer;
+  font-size: 12px; font-family: ui-monospace,Menlo,Consolas,monospace;
+}
+.exec-summary:hover { background: var(--bg-2, #252932); }
+.exec-uuid { flex: 1; color: var(--text, #e6e8ee); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exec-badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; flex: none; }
+.exec-badge.ok { background: rgba(34,197,94,.16); color: #4ade80; }
+.exec-badge.bad { background: rgba(239,68,68,.16); color: #f87171; }
+.exec-size { color: var(--text-2, #9aa3b2); flex: none; }
+.exec-out {
+  margin: 0; padding: 10px; background: #11141a; color: #d6e2f0;
+  font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+  border-top: 1px solid var(--border, #2a2f3a); max-height: 240px; overflow-y: auto;
+}
 
 /* ---------- 翻页工具条 ---------- */
 .pager-bar {

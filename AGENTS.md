@@ -111,6 +111,16 @@ GitHub Actions: "Build and Push Server Image"
 - **DB**：SQLite，路径在 VPS 宿主机 `/var/lib/docker/volumes/yufu-probe_probe-data/_data/probe.db`；容器 `probe-server` 挂 `/app/data`。`agents` 表（uuid/online/group_name/alias/remark/expire_at…）+ `groups` 表（分组注册表）。
 - **"复活陷阱"**（影响删除设计）：`state.go` 的 `applyReport` 中，若上报的 UUID 不在内存则自动新建条目 → 仅删服务端对**在线** agent 不持久（下次上报又回来）。因此"删除客户端"做成**面板移除 + 提供卸载命令**（让用户在客户端跑 `uninstall-agent.sh`），而非真删库。
 - **WS 指令**：agent 端只认 `shell_open/input/resize/close`，**没有**卸载/停止类指令；卸载只能走客户端执行 `uninstall-agent.sh`。
+
+- **批量命令下发（`server/exec.go`，方案 A：不改 Agent）**：`POST /api/agents/exec`，body `{uuids,command,timeout,concurrency,password}`，需 admin + Web SSH 密码（复用 `GetSSHLock/RecordSSHFailure`，锁 key 固定 `batch-exec`）。
+  原理：Agent 没有一次性 exec 指令，所以**服务端自己扮演「驱动方」**，对每台机器发 `shell_open` → 把脚本 base64 注入 `shell_input` → 用「前后各 echo 一个随机标记」界定输出 → `shell_close`。Agent 协议**零改动**，3000+ 台存量机器不用重推二进制。
+  五条不可动摇的约束（每一条都是踩出来的，改这块前先看 `server/exec_test.go` 的同名用例）：
+  1. **`runExec` 绝不能自己去读 `agent.conn`**。那条连接的读者只能是 `agentWSHandler` 一个协程（gorilla/websocket 禁止并发读）。抢读会吞掉状态上报和别人的 Web SSH 数据。数据回流唯一路径：`agentWSHandler` 的 `case "shell_data"` → `feedExecData`。
+  2. **`feedExecData` 收到的是 base64**（agent 侧 `sendShellData` 会编码，和转发给浏览器的负载一样），必须先解码再匹配标记。忘了解码 → 标记永远匹配不上 → 每次都走超时分支。
+  3. **标记必须由 shell 拼接产生**（`__YP=YUFU` + `__YT="${__YP}_EXEC_<tag>"`），脚本文本里不能出现完整标记串。Agent 用的是真 PTY（`/bin/bash -l` + `pty.StartWithSize`），**回显默认开**，命令会被原样回吐；若脚本里含完整标记，一次回显就凑够两个标记，命令还没跑就判定「执行完毕」。
+  4. **base64 必须按行折叠**（512 字节/行）。PTY 规范模式下 tty 行缓冲对单行有 4096 字节上限，超长行被内核丢弃/截断，几 KB 的部署脚本会**静默损坏**。脚本体积上限 64KB。
+  5. **sudo 要先探测再执行**（`if sudo -n true; then … else … fi`），不能写 `sudo -n bash … || bash …`：后者在脚本自身返回非 0 时会把命令**重跑一遍**（`systemctl restart` 之类跑两次）。
+  另：agent 掉线时 `abortExecForAgent(uuid)` 会立刻中止其名下会话，否则调用方要干等到 timeout（最长 600s）。
 - **批量更新用部分更新函数**：`SetAgentGroup(db,uuid,group)` / `SetAgentRemark` / `SetAgentExpire` 各自只 `UPDATE` 对应单列，避免 `UpdateAgent` 全量覆盖把备注/到期清空。`state.PatchAgentFields` 在锁内只改非 nil 字段。
 - **鉴权**：`/api/agents`（增删改）需 `requireAdmin`；`/api/agents/{uuid}` 用 `requireAgentTokenOrAdmin`（admin session cookie 或 agent token 任一放行）。install/uninstall command 接口需 admin。
 - **月度流量 / 每月 1 日重置（重要）**：本月流量存 `traffic_monthly` 表，主键 `(uuid, year_month)`，`year_month` 格式 `2006-01`。`AddTraffic` 按月累加、跨月自然写新行，**旧月行永久保留为历史**（`db.go` 有按 uuid 查历史的接口）。
@@ -132,6 +142,8 @@ GitHub Actions: "Build and Push Server Image"
 5. **caddy 需 Host 头**才能本地 curl 验证（§4）。
 6. **月度流量不重置**（已修，见 §6）：症状是面板「本月流量」跨月后继续累加。根因是面板读内存态而内存只加不减；另有 UTC 时区导致重置点偏移 8 小时。改动点 `server/clock.go` + `state.Flush`。
 7. 中心 VPS `/tmp` 下残留 `build*.log`、`ck*.txt`、`*.json` 及旧 `probe.db.bak.*` 备份，待清理（**不影响运行**，清理前先确认备份可删）。
+8. **批量命令这类长请求要看反代超时**：一次批量执行会把 HTTP 请求挂住到全部机器返回（最长 600s）。当前反代是 **caddy**，`reverse_proxy` 默认无读超时，没问题；**若将来换 nginx，默认 `proxy_read_timeout 60s` 会直接 504**，必须调大。
+9. **PTY 驱动类功能不要靠「肉眼看着像对」验收**：`exec` 的坑（并发读、base64、回显、tty 行长、sudo 重跑）全都是"编译通过、单测还能造出假绿"的类型。测试必须复刻真实回流路径（起一个模拟 `agentWSHandler` 的路由协程 + 喂 base64），否则测的是自己造的捷径。
 
 ---
 

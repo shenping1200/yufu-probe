@@ -1613,19 +1613,124 @@ function renderBatchBar() {
     '<button class="bb-btn" id="bbGroup">批量改分组</button>' +
     '<button class="bb-btn" id="bbRemark">批量设备注</button>' +
     '<button class="bb-btn" id="bbExpire">批量设到期</button>' +
+    '<button class="bb-btn" id="bbBatchCmd">批量命令</button>' +
     '<button class="bb-btn danger" id="bbDel">批量删除</button>';
   const all = document.getElementById('bbSelAll');
   const none = document.getElementById('bbSelNone');
   const grp = document.getElementById('bbGroup');
   const rmk = document.getElementById('bbRemark');
   const exp = document.getElementById('bbExpire');
+  const bcmd = document.getElementById('bbBatchCmd');
   const del = document.getElementById('bbDel');
   if (all) all.onclick = () => { filteredAgents().forEach(a => state.selected.add(a.uuid)); requestRender(); };
   if (none) none.onclick = () => { state.selected.clear(); requestRender(); };
   if (grp) grp.onclick = batchChangeGroup;
   if (rmk) rmk.onclick = batchSetRemark;
   if (exp) exp.onclick = batchSetExpire;
+  if (bcmd) bcmd.onclick = openBatchCmd;
   if (del) del.onclick = batchDeleteAgents;
+}
+
+// 批量命令：向已选机器并发下发脚本，结果以「每台一行 + 可展开 stdout」呈现。
+async function openBatchCmd() {
+  if (isVisitor()) return;
+  const uuids = [...state.selected];
+  if (!uuids.length) { alert('请先勾选要执行命令的机器'); return; }
+  const m = openCenterModal('批量命令（已选 ' + uuids.length + ' 台）');
+  const hint = document.createElement('div');
+  hint.className = 'gp-hint';
+  hint.textContent = '在每台机器上以交互式 shell 执行下方脚本（支持多行）。提权请用 sudo -n（非交互），失败会自动退回普通用户。需要 Web SSH 密码。';
+  m.box.insertBefore(hint, m.box.querySelector('.gp-actions'));
+
+  const ta = document.createElement('textarea');
+  ta.className = 'gp-input';
+  ta.id = 'execCmd';
+  ta.rows = 8;
+  ta.placeholder = '例如：\nid\nhostname\nsudo -n apt update';
+  m.box.insertBefore(ta, m.box.querySelector('.gp-actions'));
+
+  const pw = document.createElement('input');
+  pw.className = 'gp-input';
+  pw.type = 'password';
+  pw.id = 'execPw';
+  pw.placeholder = 'Web SSH 密码';
+  m.box.insertBefore(pw, m.box.querySelector('.gp-actions'));
+
+  const opts = document.createElement('div');
+  opts.className = 'gp-row';
+  opts.innerHTML =
+    '<label>超时(秒)<input class="gp-input gp-num" id="execTimeout" type="number" value="60" min="5" max="600"></label>' +
+    '<label>并发数<input class="gp-input gp-num" id="execConc" type="number" value="50" min="1" max="200"></label>';
+  m.box.insertBefore(opts, m.box.querySelector('.gp-actions'));
+
+  m.ok.textContent = '执行';
+  m.ok.onclick = async () => {
+    const cmd = ta.value;
+    if (!cmd.trim()) { alert('请输入要执行的命令'); return; }
+    m.ok.disabled = true;
+    m.ok.textContent = '执行中…';
+    try {
+      const r = await fetch('/api/agents/exec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uuids,
+          command: cmd,
+          timeout: parseInt(document.getElementById('execTimeout').value, 10) || 60,
+          concurrency: parseInt(document.getElementById('execConc').value, 10) || 50,
+          password: pw.value,
+        }),
+      });
+      if (r.status === 401) { alert('Web SSH 密码错误'); m.ok.disabled = false; m.ok.textContent = '执行'; return; }
+      if (r.status === 403) { alert('密码错误次数过多，已被锁定 24 小时'); m.close(); return; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      renderExecResults(m, data.results || []);
+    } catch (e) {
+      alert('批量命令失败：' + e.message);
+      m.ok.disabled = false;
+      m.ok.textContent = '执行';
+    }
+  };
+}
+
+// 把批量命令结果渲染成可展开表格
+function renderExecResults(m, results) {
+  // 复用弹窗：清掉输入控件，换成结果区
+  m.box.querySelectorAll('textarea,input,.gp-row,.gp-hint').forEach(el => el.remove());
+  m.ok.style.display = 'none';
+  m.cancel.textContent = '关闭';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'exec-results';
+  let okN = 0, failN = 0;
+  for (const r of results) {
+    if (r.status === 'ok' && r.exit_code === 0) okN++; else failN++;
+    const row = document.createElement('div');
+    row.className = 'exec-row';
+    const badge = r.status === 'ok' && r.exit_code === 0 ? 'ok' : 'bad';
+    const summary = document.createElement('div');
+    summary.className = 'exec-summary';
+    // 显示机器名而非裸 uuid（沿用列表里的 alias/hostname 回退规则），方便定位是哪台
+    const a = state.agents.find(x => x.uuid === r.uuid);
+    const label = a ? (a.alias || a.hostname || r.uuid.slice(0, 8)) : r.uuid.slice(0, 8);
+    summary.innerHTML = '<span class="exec-uuid">' + escapeHtml(label) + '</span>' +
+      '<span class="exec-badge ' + badge + '">' + escapeHtml(r.status) + (r.status === 'ok' ? ' exit=' + r.exit_code : '') + '</span>' +
+      '<span class="exec-size">' + (r.stdout ? r.stdout.length : 0) + ' 字节</span>';
+    const out = document.createElement('pre');
+    out.className = 'exec-out';
+    out.style.display = 'none';
+    out.textContent = (r.stdout || '') + (r.error ? '\n[错误] ' + r.error : '');
+    row.appendChild(summary);
+    row.appendChild(out);
+    summary.onclick = () => { out.style.display = out.style.display === 'none' ? 'block' : 'none'; };
+    wrap.appendChild(row);
+  }
+  const title = document.createElement('div');
+  title.className = 'exec-title';
+  title.textContent = '完成：成功 ' + okN + ' / 失败 ' + failN + ' / 共 ' + results.length + '（点行展开输出）';
+  m.box.insertBefore(title, m.box.querySelector('.gp-actions'));
+  m.box.insertBefore(wrap, m.box.querySelector('.gp-actions'));
 }
 
 // 单台删除（含确认）。提示文案说明「仅面板移除 + 复活可能」，引导用卸载命令彻底清理。

@@ -552,7 +552,8 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 		defer func() {
 			if agentUUID != "" {
 				hub.removeAgent(agentUUID)
-				notifyAgentGone(agentUUID) // 关闭该 agent 名下所有 Web SSH 会话
+				notifyAgentGone(agentUUID)   // 关闭该 agent 名下所有 Web SSH 会话
+				abortExecForAgent(agentUUID) // 中止该 agent 名下所有批量命令会话，别让调用方干等到超时
 			}
 			conn.Close()
 		}()
@@ -575,6 +576,7 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 					live.Remove(ctrl.UUID)
 					hub.removeAgent(ctrl.UUID)
 					notifyAgentGone(ctrl.UUID)
+					abortExecForAgent(ctrl.UUID)
 					broadcastAgents(hub)
 					log.Printf("[ws] agent %s 主动断开（记录保留，由 DELETE 接口或离线超时处理）", ctrl.UUID)
 				}
@@ -589,7 +591,12 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if err := json.Unmarshal(data, &term); err == nil {
 				switch term.Action {
 				case "shell_data":
-					forwardShellData(term.Session, term.Data)
+					// 先查批量命令会话（服务端驱动），再回落到浏览器终端会话
+					if es := findExec(term.Session); es != nil {
+						feedExecData(term.Session, term.Data)
+					} else {
+						forwardShellData(term.Session, term.Data)
+					}
 					continue
 				case "shell_exit":
 					if ts := unregisterTerm(term.Session); ts != nil {
@@ -699,9 +706,9 @@ func visitorLinkHandler(db *sql.DB) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"path":     "/v/" + token,
-			"token":    token,
-			"expires":  time.Unix(now+int64(visitorLinkTTL.Seconds()), 0).UTC().Format(time.RFC3339),
+			"path":    "/v/" + token,
+			"token":   token,
+			"expires": time.Unix(now+int64(visitorLinkTTL.Seconds()), 0).UTC().Format(time.RFC3339),
 		})
 	}
 }
@@ -785,6 +792,8 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	// 批量操作（管理员）：DELETE/PATCH 作用于整批 uuid，路径不带 {uuid} 以区分单台
 	r.HandleFunc("/api/agents", requireAdmin(db, batchDeleteAgentsHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents", requireAdmin(db, batchUpdateAgentsHandler(db, hub))).Methods("PATCH")
+	// 批量命令下发：管理员 + Web SSH 密码，向一批机器并发执行脚本
+	r.HandleFunc("/api/agents/exec", requireAdmin(db, execHandler(cfg, db, hub))).Methods("POST")
 	// 分组级管理：列表（只读）访客可看；新建/重命名/删除仅管理员
 	r.HandleFunc("/api/groups", requireAdmin(db, createGroupHandler(db, hub))).Methods("POST")
 	r.HandleFunc("/api/groups", requireLogin(db, listGroupsHandler(db))).Methods("GET")
