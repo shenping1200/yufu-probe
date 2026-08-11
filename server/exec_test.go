@@ -279,6 +279,62 @@ func TestCleanExecOutputStripsCR(t *testing.T) {
 	}
 }
 
+// TestParseExecOutputRealWorldPTY 用生产真机（qwenpaw-sbs-prod-lm2sm，交互 bash + TERM=xterm-256color）
+// 实际抓到的原始字节做回归。这段噪声是单测造不出来的，只有真机才暴露：
+//   - \x1b[?2004h / \x1b[?2004l：readline 的 bracketed paste 开关序列
+//   - root@host:/path#：bash 主动打印的 PS1 提示符（stty -echo 关不掉）
+//
+// 前端用 <pre> 展示不渲染 ANSI，不剥掉用户就看到一堆乱码。
+func TestParseExecOutputRealWorldPTY(t *testing.T) {
+	tok := tokRoot + "_EXEC_realworld"
+	const prompt = "root@qwenpaw-sbs-prod-lm2sm:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/default# "
+	raw := tok + "\r\n" +
+		"\x1b[?2004h" + prompt + "\x1b[?2004l\n" +
+		"uid=0(root) gid=0(root) groups=0(root)\n" +
+		"qwenpaw-sbs-prod-lm2sm\n" +
+		"5.10.134-18.0.12.lifsea8.x86_64\n" +
+		"多行脚本-中文-OK\n" +
+		"\x1b[?2004h" + prompt + "\x1b[?2004l" +
+		"EXIT=0\r\n" + tok + "\r\n"
+
+	res := parseExecOutput(raw, tok)
+	if res.Status != "ok" || res.ExitCode != 0 {
+		t.Fatalf("状态/退出码不对: %+v", res)
+	}
+	if strings.ContainsRune(res.Stdout, '\x1b') {
+		t.Fatalf("stdout 里仍残留 ANSI 转义序列: %q", res.Stdout)
+	}
+	if strings.Contains(res.Stdout, "2004h") || strings.Contains(res.Stdout, "2004l") {
+		t.Fatalf("bracketed paste 序列未剥净: %q", res.Stdout)
+	}
+	// 真实内容必须完好，包括中文
+	for _, want := range []string{
+		"uid=0(root) gid=0(root) groups=0(root)",
+		"qwenpaw-sbs-prod-lm2sm",
+		"5.10.134-18.0.12.lifsea8.x86_64",
+		"多行脚本-中文-OK",
+	} {
+		if !strings.Contains(res.Stdout, want) {
+			t.Fatalf("真实输出丢了 %q，得到:\n%s", want, res.Stdout)
+		}
+	}
+}
+
+// TestBuildExecScriptSuppressesPrompt 回归：脚本必须清掉 PS1/PROMPT_COMMAND 并关 bracketed paste，
+// 否则每台机器的输出都会夹提示符与转义序列（真机实测）。
+func TestBuildExecScriptSuppressesPrompt(t *testing.T) {
+	script := buildExecScript("id\n", "tagx")
+	for _, want := range []string{"PS1=", "PROMPT_COMMAND=", "enable-bracketed-paste off"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("脚本缺少 %q:\n%s", want, script)
+		}
+	}
+	// PS1= 必须在注入用户脚本之前生效
+	if strings.Index(script, "PS1=") > strings.Index(script, "<<'YUFU_EOF'") {
+		t.Fatalf("PS1= 出现在 heredoc 之后，提示符已经打出来了:\n%s", script)
+	}
+}
+
 // TestFeedExecDataDecodesBase64 回归：agentWSHandler 传进来的是 base64（和转发给浏览器的一样），
 // feedExecData 必须解码后再匹配标记。曾经忘了解码，导致生产环境每次都走超时分支。
 func TestFeedExecDataDecodesBase64(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,6 +176,12 @@ func buildExecScript(command, tag string) string {
 	tmp := "/tmp/.yufu_exec_" + tag + ".sh"
 	var b strings.Builder
 	b.WriteString("stty -echo 2>/dev/null\n")
+	// 清空提示符：PS1 是 bash 主动打印的，stty -echo 关不掉它。不清的话每台机器的输出里
+	// 都会夹两行 `root@host:/path#`（真机实测），批量几百台时噪声很可观。
+	// PROMPT_COMMAND 一并清掉，有些发行版用它输出设置终端标题的转义序列。
+	b.WriteString("PS1=\nPROMPT_COMMAND=\n")
+	// 关掉 readline 的 bracketed paste，否则每次显示提示符都吐 \e[?2004h / \e[?2004l
+	b.WriteString("bind 'set enable-bracketed-paste off' 2>/dev/null\n")
 	b.WriteString("base64 -d > " + tmp + " <<'YUFU_EOF'\n")
 	// base64 必须按行折叠：PTY 处于规范（canonical）模式时，tty 行缓冲对单行有 4096 字节
 	// 上限，超长的一行会被内核丢弃/截断，几 KB 的部署脚本就会静默损坏。
@@ -282,8 +289,25 @@ func extractOutput(raw, tok string) string {
 // echoNoise 是驱动脚本自身的特征片段：若目标机 stty -echo 没生效，
 // 这些行会被 PTY 原样回显进捕获区，属于噪声，展示前剔除。
 var echoNoise = []string{
-	"__YT", "__YP", "YUFU_EOF", "stty -echo",
-	"sudo -n true 2>/dev/null", "EXIT=$?", "/tmp/.yufu_exec_",
+	"__YT", "__YP", "YUFU_EOF", "stty -echo", "PROMPT_COMMAND",
+	"enable-bracketed-paste", "sudo -n true 2>/dev/null", "EXIT=$?", "/tmp/.yufu_exec_",
+}
+
+// ansiRe 匹配终端转义序列。PTY 里跑的是 TERM=xterm-256color 的交互 bash，
+// 输出里会混进 CSI 序列（bracketed paste 的 \e[?2004h/l、命令自身的颜色码等）
+// 和 OSC 序列（设置窗口标题）。前端用 <pre> 展示，不渲染 ANSI，不剥掉就是一堆乱码。
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;?<>=]*[a-zA-Z]" + // CSI
+	"|\x1b\\][^\a\x1b]*(?:\a|\x1b\\\\)" + // OSC（以 BEL 或 ST 结尾）
+	"|\x1b[()][A-Za-z0-9]" + // 字符集切换
+	"|\x1b[=>]") // 键盘模式
+
+// ctrlRe 匹配剩余的不可见控制字符（保留 \n 与 \t）
+var ctrlRe = regexp.MustCompile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+// stripANSI 剥掉转义序列与残留控制字符
+func stripANSI(s string) string {
+	s = ansiRe.ReplaceAllString(s, "")
+	return ctrlRe.ReplaceAllString(s, "")
 }
 
 // cleanExecOutput 剔除回显噪声行，让用户看到的 stdout 尽量只是命令自身输出
@@ -291,6 +315,7 @@ func cleanExecOutput(body string) string {
 	if body == "" {
 		return body
 	}
+	body = stripANSI(body)
 	lines := strings.Split(body, "\n")
 	kept := make([]string, 0, len(lines))
 	for _, ln := range lines {

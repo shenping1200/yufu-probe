@@ -121,6 +121,7 @@ GitHub Actions: "Build and Push Server Image"
   4. **base64 必须按行折叠**（512 字节/行）。PTY 规范模式下 tty 行缓冲对单行有 4096 字节上限，超长行被内核丢弃/截断，几 KB 的部署脚本会**静默损坏**。脚本体积上限 64KB。
   5. **sudo 要先探测再执行**（`if sudo -n true; then … else … fi`），不能写 `sudo -n bash … || bash …`：后者在脚本自身返回非 0 时会把命令**重跑一遍**（`systemctl restart` 之类跑两次）。
   另：agent 掉线时 `abortExecForAgent(uuid)` 会立刻中止其名下会话，否则调用方要干等到 timeout（最长 600s）。
+  6. **必须清 PS1/PROMPT_COMMAND 并剥 ANSI**。PTY 里是交互 bash + `TERM=xterm-256color`：提示符是 bash 主动打印的（`stty -echo` 关不掉），readline 还会吐 bracketed paste 的 `\e[?2004h`/`\e[?2004l`。真机实测每台输出都夹两行 `root@host:/path#` 和转义序列，前端 `<pre>` 不渲染 ANSI 就是一堆乱码。脚本里 `PS1=`/`PROMPT_COMMAND=`/`bind 'set enable-bracketed-paste off'`，输出侧再用 `stripANSI` 兜底（顺带解决 apt 等带颜色输出的乱码）。回归用例 `TestParseExecOutputRealWorldPTY` 直接用生产真机抓到的原始字节。
 - **批量更新用部分更新函数**：`SetAgentGroup(db,uuid,group)` / `SetAgentRemark` / `SetAgentExpire` 各自只 `UPDATE` 对应单列，避免 `UpdateAgent` 全量覆盖把备注/到期清空。`state.PatchAgentFields` 在锁内只改非 nil 字段。
 - **鉴权**：`/api/agents`（增删改）需 `requireAdmin`；`/api/agents/{uuid}` 用 `requireAgentTokenOrAdmin`（admin session cookie 或 agent token 任一放行）。install/uninstall command 接口需 admin。
 - **月度流量 / 每月 1 日重置（重要）**：本月流量存 `traffic_monthly` 表，主键 `(uuid, year_month)`，`year_month` 格式 `2006-01`。`AddTraffic` 按月累加、跨月自然写新行，**旧月行永久保留为历史**（`db.go` 有按 uuid 查历史的接口）。
