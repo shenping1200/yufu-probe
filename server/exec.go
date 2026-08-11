@@ -39,6 +39,15 @@ const b64LineWidth = 512
 // 注入是逐字节写进对端 PTY 的 stdin，太大既慢又可能把 agent 的 readLoop 卡在 pty.Write 上。
 const maxExecCommand = 64 * 1024
 
+// maxExecOutput 单台机器输出的累积上限。
+// 批量场景下这个上限是必须的：并发 200 台各跑个 journalctl 就能把服务端内存打满。
+// 超限后只保留尾部滑动窗口（execTailKeep），既控住内存又不丢结束标记。
+const maxExecOutput = 256 * 1024
+
+// execTailKeep 超限后保留的尾部窗口大小。结束标记与 EXIT= 行都在输出末尾，
+// 留这么多足够解析出退出码。
+const execTailKeep = 8 * 1024
+
 // execSession 一次「服务端驱动」的单台命令执行。
 // 与 terminal.go 的 termSession 并存：termSession 桥接浏览器终端，execSession 由
 // 服务端代码驱动，没有浏览器参与。
@@ -48,9 +57,11 @@ type execSession struct {
 	tok   string // 本次会话的完整标记，输出里出现两次即视为执行完毕
 	agent *Client
 
-	mu       sync.Mutex   // 保护 out / abortErr：feedExecData 在 agentWSHandler 协程写，runExec 在 HTTP 协程读
-	out      bytes.Buffer // 累积 agent 回传的 shell_data（已 base64 解码）
-	abortErr string       // 非空表示会话被中止（例如 agent 掉线）
+	mu        sync.Mutex   // 保护 out/tail/abortErr：feedExecData 在 agentWSHandler 协程写，runExec 在 HTTP 协程读
+	out       bytes.Buffer // 累积 agent 回传的 shell_data（已 base64 解码），上限 maxExecOutput
+	tail      []byte       // 超限后的尾部滑动窗口，保证结束标记与 EXIT= 行不丢
+	truncated bool         // 是否已超限截断
+	abortErr  string       // 非空表示会话被中止（例如 agent 掉线）
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -62,25 +73,51 @@ type execSession struct {
 // finish 幂等地结束会话
 func (s *execSession) finish() { s.closeOnce.Do(func() { close(s.done) }) }
 
-// feed 累积一片已解码数据，并在见到第二个标记时结束会话
+// feed 累积一片已解码数据，并在见到第二个标记时结束会话。
+// 超过 maxExecOutput 后不再增长主缓冲，改写入尾部滑动窗口，避免大输出把内存吃光。
 func (s *execSession) feed(text string) {
 	s.mu.Lock()
-	s.out.WriteString(text)
-	full := s.out.String()
+	if !s.truncated && s.out.Len()+len(text) <= maxExecOutput {
+		s.out.WriteString(text)
+	} else {
+		if !s.truncated {
+			s.truncated = true
+			// 迁移 len(tok)-1 字节重叠，避免标记正好跨在边界上被切成两半。
+			// 只能是 len-1：取满 len(tok) 会把已在 out 里计数过的标记在 tail 里重复计一次，
+			// 导致标记数虚增到 2、命令还没跑完就判定结束。
+			cur := s.out.String()
+			if n := len(s.tok) - 1; len(cur) > n {
+				s.tail = append(s.tail[:0], cur[len(cur)-n:]...)
+			} else {
+				s.tail = append(s.tail[:0], cur...)
+			}
+		}
+		s.tail = append(s.tail, text...)
+		if len(s.tail) > execTailKeep {
+			s.tail = s.tail[len(s.tail)-execTailKeep:]
+		}
+	}
+	hits := strings.Count(s.out.String(), s.tok)
+	if s.truncated {
+		hits += strings.Count(string(s.tail), s.tok)
+	}
 	s.mu.Unlock()
 	if s.DataCb != nil {
 		s.DataCb(text)
 	}
-	if strings.Count(full, s.tok) >= 2 {
+	if hits >= 2 {
 		s.finish()
 	}
 }
 
-// snapshot 带锁地取当前已收集到的全部输出
+// snapshot 带锁地取当前已收集到的全部输出（截断过则拼上尾部窗口并注明）
 func (s *execSession) snapshot() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.out.String()
+	if !s.truncated {
+		return s.out.String()
+	}
+	return s.out.String() + "\n…[输出过长，中间已截断]…\n" + string(s.tail)
 }
 
 // abort 中止会话（agent 掉线等），记录原因并唤醒等待方
@@ -288,10 +325,17 @@ func extractOutput(raw, tok string) string {
 
 // echoNoise 是驱动脚本自身的特征片段：若目标机 stty -echo 没生效，
 // 这些行会被 PTY 原样回显进捕获区，属于噪声，展示前剔除。
+// 注意：这里**不能**放临时脚本路径（/tmp/.yufu_exec_*.sh）。bash 的真实报错形如
+// `/tmp/.yufu_exec_xxx.sh: line 3: foo: command not found`，按路径过滤会把用户最需要的
+// 报错整行删掉（真机实测 exit=127 但 stdout 空）。路径改由 tmpPathRe 换成友好名字。
 var echoNoise = []string{
 	"__YT", "__YP", "YUFU_EOF", "stty -echo", "PROMPT_COMMAND",
-	"enable-bracketed-paste", "sudo -n true 2>/dev/null", "EXIT=$?", "/tmp/.yufu_exec_",
+	"enable-bracketed-paste", "sudo -n true 2>/dev/null", "EXIT=$?",
 }
+
+// tmpPathRe 把注入用的临时脚本路径换成 `script`，让 bash 报错读起来像
+// `script: line 3: foo: command not found`，保留行号这类关键定位信息。
+var tmpPathRe = regexp.MustCompile(`/tmp/\.yufu_exec_[0-9a-zA-Z]+\.sh`)
 
 // ansiRe 匹配终端转义序列。PTY 里跑的是 TERM=xterm-256color 的交互 bash，
 // 输出里会混进 CSI 序列（bracketed paste 的 \e[?2004h/l、命令自身的颜色码等）
@@ -316,6 +360,7 @@ func cleanExecOutput(body string) string {
 		return body
 	}
 	body = stripANSI(body)
+	body = tmpPathRe.ReplaceAllString(body, "script")
 	lines := strings.Split(body, "\n")
 	kept := make([]string, 0, len(lines))
 	for _, ln := range lines {

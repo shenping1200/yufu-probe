@@ -320,6 +320,34 @@ func TestParseExecOutputRealWorldPTY(t *testing.T) {
 	}
 }
 
+// TestParseExecOutputKeepsBashErrors 回归（真机实测发现）：
+// bash 的报错里带注入用的临时脚本路径，形如
+// `/tmp/.yufu_exec_xxx.sh: line 1: foo: command not found`。
+// 早先把这个路径当成「脚本回显特征」过滤，结果 exit=127 但 stdout 为空 ——
+// 恰好把用户最需要的报错删掉了。现在只把路径换成 `script`，整行必须保留。
+func TestParseExecOutputKeepsBashErrors(t *testing.T) {
+	tok := tokRoot + "_EXEC_err1"
+	raw := tok + "\r\n" +
+		"/tmp/.yufu_exec_err1.sh: line 1: this-cmd-does-not-exist-xyz: command not found\r\n" +
+		"EXIT=127\r\n" + tok + "\r\n"
+	res := parseExecOutput(raw, tok)
+	if res.ExitCode != 127 {
+		t.Fatalf("退出码应为 127，实际 %d", res.ExitCode)
+	}
+	if !strings.Contains(res.Stdout, "command not found") {
+		t.Fatalf("bash 报错被吞了，stdout=%q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "line 1") {
+		t.Fatalf("报错行号丢了（定位信息），stdout=%q", res.Stdout)
+	}
+	if strings.Contains(res.Stdout, "/tmp/.yufu_exec_") {
+		t.Fatalf("内部临时路径不该暴露给用户，stdout=%q", res.Stdout)
+	}
+	if !strings.HasPrefix(res.Stdout, "script:") {
+		t.Fatalf("路径应替换为 script，stdout=%q", res.Stdout)
+	}
+}
+
 // TestBuildExecScriptSuppressesPrompt 回归：脚本必须清掉 PS1/PROMPT_COMMAND 并关 bracketed paste，
 // 否则每台机器的输出都会夹提示符与转义序列（真机实测）。
 func TestBuildExecScriptSuppressesPrompt(t *testing.T) {
@@ -332,6 +360,47 @@ func TestBuildExecScriptSuppressesPrompt(t *testing.T) {
 	// PS1= 必须在注入用户脚本之前生效
 	if strings.Index(script, "PS1=") > strings.Index(script, "<<'YUFU_EOF'") {
 		t.Fatalf("PS1= 出现在 heredoc 之后，提示符已经打出来了:\n%s", script)
+	}
+}
+
+// TestExecOutputTruncation 验证大输出被截断但仍能正确收尾：
+// 批量场景下这个上限是必须的（并发 200 台各跑 journalctl 就能把服务端内存打满），
+// 同时不能因为截断丢掉结束标记和 EXIT= 行，否则会误判成超时。
+func TestExecOutputTruncation(t *testing.T) {
+	ses := &execSession{sid: "sid-big", uuid: "u-big", tok: tokRoot + "_EXEC_big", done: make(chan struct{})}
+	registerExec(ses.sid, ses)
+	defer unregisterExec(ses.sid)
+
+	ses.feed(ses.tok + "\r\n")
+	// 灌 1MB，远超 maxExecOutput(256KB)
+	chunk := strings.Repeat("x", 64*1024)
+	for i := 0; i < 16; i++ {
+		ses.feed(chunk)
+	}
+	if !ses.truncated {
+		t.Fatal("灌了 1MB 仍未触发截断，内存无上限")
+	}
+	// 收尾标记必须仍然生效
+	ses.feed("tail-output-line\r\nEXIT=7\r\n" + ses.tok + "\r\n")
+	select {
+	case <-ses.done:
+	case <-time.After(time.Second):
+		t.Fatal("截断后结束标记失效，会被误判成超时")
+	}
+
+	snap := ses.snapshot()
+	if len(snap) > maxExecOutput+execTailKeep+128 {
+		t.Fatalf("快照体积失控: %d 字节", len(snap))
+	}
+	res := parseExecOutput(snap, ses.tok)
+	if res.Status != "ok" || res.ExitCode != 7 {
+		t.Fatalf("截断后仍应解析出退出码 7，实际 %+v", res.Status)
+	}
+	if !strings.Contains(res.Stdout, "tail-output-line") {
+		t.Fatal("尾部真实输出丢失")
+	}
+	if !strings.Contains(res.Stdout, "已截断") {
+		t.Fatal("未告知用户输出被截断")
 	}
 }
 
