@@ -374,8 +374,11 @@ func TestParseExecOutputRealWorldPTY(t *testing.T) {
 // 恰好把用户最需要的报错删掉了。现在只把路径换成 `script`，整行必须保留。
 func TestParseExecOutputKeepsBashErrors(t *testing.T) {
 	tok := tokRoot + "_EXEC_err1"
+	// 用真实文件名（cmd_/drv_ 前缀 + 下划线）当夹具，否则正则漏掉下划线会在生产失效、
+	// 而单测用无下划线假路径造出假绿。
 	raw := tok + "\r\n" +
-		"/tmp/.yufu_exec_err1.sh: line 1: this-cmd-does-not-exist-xyz: command not found\r\n" +
+		"/tmp/.yufu_exec_cmd_err1.sh: line 1: this-cmd-does-not-exist-xyz: command not found\r\n" +
+		"/tmp/.yufu_exec_drv_err1.sh: line 4: another-bad-cmd: No such file or directory\r\n" +
 		"EXIT=127\r\n" + tok + "\r\n"
 	res := parseExecOutput(raw, tok)
 	if res.ExitCode != 127 {

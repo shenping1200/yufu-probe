@@ -361,7 +361,10 @@ var echoNoise = []string{
 
 // tmpPathRe 把注入用的临时脚本路径换成 `script`，让 bash 报错读起来像
 // `script: line 3: foo: command not found`，保留行号这类关键定位信息。
-var tmpPathRe = regexp.MustCompile(`/tmp/\.yufu_exec_[0-9a-zA-Z]+\.sh`)
+// 字符类必须含下划线：真实文件名是 /tmp/.yufu_exec_cmd_<tag>.sh / drv_<tag>.sh，
+// cmd_/drv_ 与 <tag> 之间是下划线，漏掉它会导致正则匹配断在 cmd 处、整条规则失效
+// （曾经因此生产里把内部路径泄露给用户，而单测用无下划线的假路径造出假绿）。
+var tmpPathRe = regexp.MustCompile(`/tmp/\.yufu_exec_[0-9a-zA-Z_]+\.sh`)
 
 // ansiRe 匹配终端转义序列。PTY 里跑的是 TERM=xterm-256color 的交互 bash，
 // 输出里会混进 CSI 序列（bracketed paste 的 \e[?2004h/l、命令自身的颜色码等）
