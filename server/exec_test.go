@@ -16,18 +16,62 @@ import (
 // tokenFromScript 从注入脚本里还原出本次会话的完整标记。
 // 脚本里标记是拼接生成的（`__YT="${__YP}_EXEC_<tag>"`），所以这里要按结构解析，
 // 而不是直接搜完整标记串 —— 那正是本功能要保证「脚本里不出现」的东西。
+// 旧版驱动逻辑在顶层明文，新版改成 base64 heredoc（<<'YUFU_EOF2'）写文件执行，
+// 标记结构只在解码后的 driver 里出现，所以这里先试顶层，再回退到解码 driver。
 func tokenFromScript(script string) string {
 	const marker = `__YT="${__YP}_EXEC_`
-	i := strings.Index(script, marker)
-	if i < 0 {
+	if i := strings.Index(script, marker); i >= 0 {
+		return extractTokFromRest(script[i+len(marker):])
+	}
+	// 新版：解码 driver heredoc（<<'YUFU_EOF2' ... YUFU_EOF2）再找标记。
+	const opener = "<<'YUFU_EOF2'\n"
+	o := strings.Index(script, opener)
+	if o < 0 {
 		return ""
 	}
-	rest := script[i+len(marker):]
+	start := o + len(opener)
+	e := strings.Index(script[start:], "YUFU_EOF2\n")
+	if e < 0 {
+		return ""
+	}
+	blob := strings.ReplaceAll(script[start:start+e], "\n", "")
+	dec, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		return ""
+	}
+	if i := strings.Index(string(dec), marker); i >= 0 {
+		return extractTokFromRest(string(dec)[i+len(marker):])
+	}
+	return ""
+}
+
+func extractTokFromRest(rest string) string {
 	j := strings.IndexByte(rest, '"')
 	if j < 0 {
 		return ""
 	}
 	return tokRoot + "_EXEC_" + rest[:j]
+}
+
+// decodeHeredoc 取出脚本里 opener..closer 之间的 base64（折叠带换行）并解码，
+// 用于校验被写进临时文件的用户命令/驱动逻辑内容。
+func decodeHeredoc(t *testing.T, script, opener, closer string) string {
+	t.Helper()
+	o := strings.Index(script, opener)
+	if o < 0 {
+		t.Fatalf("找不到 heredoc 开始标记 %q:\n%s", opener, script)
+	}
+	start := o + len(opener)
+	e := strings.Index(script[start:], closer)
+	if e < 0 {
+		t.Fatalf("找不到 heredoc 结束标记 %q:\n%s", closer, script)
+	}
+	blob := strings.ReplaceAll(script[start:start+e], "\n", "")
+	dec, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		t.Fatalf("heredoc 内容 base64 解码失败: %v", err)
+	}
+	return string(dec)
 }
 
 // startMockAgent 起一个假 Agent：累积 shell_input 解出的脚本，等注入完整（见到收尾的 rm -f）后，
@@ -214,11 +258,14 @@ func TestBuildExecScriptSafety(t *testing.T) {
 	if tokenFromScript(script) != tok {
 		t.Fatalf("标记拼接结构变了，解析得到 %q 期望 %q", tokenFromScript(script), tok)
 	}
-	if strings.Contains(script, "|| bash") {
+	// 新版驱动逻辑（含 sudo 探测分支、EXIT=、收尾 echo）被 base64 进 <<'YUFU_EOF2' heredoc，
+	// 顶层脚本里不再是明文。解码 driver 再校验这些不变量。
+	driver := decodeHeredoc(t, script, "<<'YUFU_EOF2'\n", "YUFU_EOF2\n")
+	if strings.Contains(script, "|| bash") || strings.Contains(driver, "|| bash") {
 		t.Fatalf("sudo 回退写成了 `|| bash`，脚本返回非 0 时会重复执行:\n%s", script)
 	}
-	if !strings.Contains(script, "if sudo -n true 2>/dev/null; then") {
-		t.Fatalf("缺少 sudo 探测分支:\n%s", script)
+	if !strings.Contains(driver, "if sudo -n true 2>/dev/null </dev/null; then") {
+		t.Fatalf("driver 缺少 sudo 探测分支（且未加 </dev/null 防读 tty）:\n%s", driver)
 	}
 	if !strings.Contains(script, "stty -echo") {
 		t.Fatalf("缺少关闭 PTY 回显:\n%s", script)
@@ -244,15 +291,15 @@ func TestBuildExecScriptLineLength(t *testing.T) {
 			t.Fatalf("第 %d 行长度 %d 超过 1024，会触发 tty 行缓冲截断", i+1, len(ln))
 		}
 	}
-	// 折叠后仍要能还原：把 heredoc 内容拼回去做 base64 解码
-	// 注意开头是 `<<'YUFU_EOF'`（带引号），结束行才是裸 `YUFU_EOF`
-	const opener = "<<'YUFU_EOF'\n"
+	// 折叠后仍要能还原：把用户命令 heredoc（<<'YUFU_EOF1'）内容拼回去做 base64 解码。
+	// 新版脚本有两个 heredoc：EOF1 装用户命令、EOF2 装驱动逻辑，这里校验的是用户命令那个。
+	const opener = "<<'YUFU_EOF1'\n"
 	i := strings.Index(script, opener)
 	if i < 0 {
 		t.Fatalf("找不到 heredoc 开始标记:\n%s", script)
 	}
 	start := i + len(opener)
-	j := strings.Index(script[start:], "YUFU_EOF\n")
+	j := strings.Index(script[start:], "YUFU_EOF1\n")
 	if j < 0 {
 		t.Fatalf("找不到 heredoc 结束标记:\n%s", script)
 	}
@@ -357,8 +404,9 @@ func TestBuildExecScriptSuppressesPrompt(t *testing.T) {
 			t.Fatalf("脚本缺少 %q:\n%s", want, script)
 		}
 	}
-	// PS1= 必须在注入用户脚本之前生效
-	if strings.Index(script, "PS1=") > strings.Index(script, "<<'YUFU_EOF'") {
+	// PS1= 必须在注入用户脚本之前生效。注意新版脚本用两个 heredoc：
+	// 用户脚本落在 <<'YUFU_EOF1'，驱动脚本落在 <<'YUFU_EOF2'。
+	if strings.Index(script, "PS1=") > strings.Index(script, "<<'YUFU_EOF1'") {
 		t.Fatalf("PS1= 出现在 heredoc 之后，提示符已经打出来了:\n%s", script)
 	}
 }

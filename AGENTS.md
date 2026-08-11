@@ -114,14 +114,15 @@ GitHub Actions: "Build and Push Server Image"
 
 - **批量命令下发（`server/exec.go`，方案 A：不改 Agent）**：`POST /api/agents/exec`，body `{uuids,command,timeout,concurrency,password}`，需 admin + Web SSH 密码（复用 `GetSSHLock/RecordSSHFailure`，锁 key 固定 `batch-exec`）。
   原理：Agent 没有一次性 exec 指令，所以**服务端自己扮演「驱动方」**，对每台机器发 `shell_open` → 把脚本 base64 注入 `shell_input` → 用「前后各 echo 一个随机标记」界定输出 → `shell_close`。Agent 协议**零改动**，3000+ 台存量机器不用重推二进制。
-  五条不可动摇的约束（每一条都是踩出来的，改这块前先看 `server/exec_test.go` 的同名用例）：
+  七条不可动摇的约束（每一条都是踩出来的，改这块前先看 `server/exec_test.go` 的同名用例）：
   1. **`runExec` 绝不能自己去读 `agent.conn`**。那条连接的读者只能是 `agentWSHandler` 一个协程（gorilla/websocket 禁止并发读）。抢读会吞掉状态上报和别人的 Web SSH 数据。数据回流唯一路径：`agentWSHandler` 的 `case "shell_data"` → `feedExecData`。
   2. **`feedExecData` 收到的是 base64**（agent 侧 `sendShellData` 会编码，和转发给浏览器的负载一样），必须先解码再匹配标记。忘了解码 → 标记永远匹配不上 → 每次都走超时分支。
   3. **标记必须由 shell 拼接产生**（`__YP=YUFU` + `__YT="${__YP}_EXEC_<tag>"`），脚本文本里不能出现完整标记串。Agent 用的是真 PTY（`/bin/bash -l` + `pty.StartWithSize`），**回显默认开**，命令会被原样回吐；若脚本里含完整标记，一次回显就凑够两个标记，命令还没跑就判定「执行完毕」。
   4. **base64 必须按行折叠**（512 字节/行）。PTY 规范模式下 tty 行缓冲对单行有 4096 字节上限，超长行被内核丢弃/截断，几 KB 的部署脚本会**静默损坏**。脚本体积上限 64KB。
   5. **sudo 要先探测再执行**（`if sudo -n true; then … else … fi`），不能写 `sudo -n bash … || bash …`：后者在脚本自身返回非 0 时会把命令**重跑一遍**（`systemctl restart` 之类跑两次）。
+  6. **驱动逻辑必须写文件执行，绝不能把收尾命令（`echo "$__YT"` / `echo "EXIT=$?"`）预先排在 tty 输入队列里等 bash 逐行读**。早期版本这么写，真机多机复测时装了 sudo 的机器全部超时：sudo 调 `tcflush` 清空 tty 输入队列，把排在后面的收尾命令整段冲掉（命令本身跑完了、输出也对，就是永远等不到结束标记）。apt/dialog/ssh 等读 tty 的命令同后果，而部署脚本里这些太常见。现在改用**文件驱动**：用户脚本写 `<<'YUFU_EOF1'` 的 base64 heredoc（`/tmp/.yufu_exec_cmd_<tag>.sh`），驱动（产出标记 + EXIT= + 收尾 echo）写 `<<'YUFU_EOF2'` 的 base64 heredoc（`/tmp/.yufu_exec_drv_<tag>.sh`），最后一行 `bash <driver>; rm -f <driver> <inner>` 执行并就地清理。关键在于收尾逻辑从 tty 队列彻底解耦；执行与清理放同一行，bash 读走整行后 tty 队列即空，后续 sudo/apt 再怎么折腾 tty 都没有待读命令可被冲掉。所有写文件的内容都带 `</dev/null` 防命令读 tty。回归用例 `TestBuildExecScriptSafety` 解码 driver heredoc 校验 sudo 分支。
   另：agent 掉线时 `abortExecForAgent(uuid)` 会立刻中止其名下会话，否则调用方要干等到 timeout（最长 600s）。
-  6. **必须清 PS1/PROMPT_COMMAND 并剥 ANSI**。PTY 里是交互 bash + `TERM=xterm-256color`：提示符是 bash 主动打印的（`stty -echo` 关不掉），readline 还会吐 bracketed paste 的 `\e[?2004h`/`\e[?2004l`。真机实测每台输出都夹两行 `root@host:/path#` 和转义序列，前端 `<pre>` 不渲染 ANSI 就是一堆乱码。脚本里 `PS1=`/`PROMPT_COMMAND=`/`bind 'set enable-bracketed-paste off'`，输出侧再用 `stripANSI` 兜底（顺带解决 apt 等带颜色输出的乱码）。回归用例 `TestParseExecOutputRealWorldPTY` 直接用生产真机抓到的原始字节。
+  7. **必须清 PS1/PROMPT_COMMAND 并剥 ANSI**。PTY 里是交互 bash + `TERM=xterm-256color`：提示符是 bash 主动打印的（`stty -echo` 关不掉），readline 还会吐 bracketed paste 的 `\e[?2004h`/`\e[?2004l`。真机实测每台输出都夹两行 `root@host:/path#` 和转义序列，前端 `<pre>` 不渲染 ANSI 就是一堆乱码。脚本里 `PS1=`/`PROMPT_COMMAND=`/`bind 'set enable-bracketed-paste off'`，输出侧再用 `stripANSI` 兜底（顺带解决 apt 等带颜色输出的乱码）。回归用例 `TestParseExecOutputRealWorldPTY` 直接用生产真机抓到的原始字节。
 - **批量更新用部分更新函数**：`SetAgentGroup(db,uuid,group)` / `SetAgentRemark` / `SetAgentExpire` 各自只 `UPDATE` 对应单列，避免 `UpdateAgent` 全量覆盖把备注/到期清空。`state.PatchAgentFields` 在锁内只改非 nil 字段。
 - **鉴权**：`/api/agents`（增删改）需 `requireAdmin`；`/api/agents/{uuid}` 用 `requireAgentTokenOrAdmin`（admin session cookie 或 agent token 任一放行）。install/uninstall command 接口需 admin。
 - **月度流量 / 每月 1 日重置（重要）**：本月流量存 `traffic_monthly` 表，主键 `(uuid, year_month)`，`year_month` 格式 `2006-01`。`AddTraffic` 按月累加、跨月自然写新行，**旧月行永久保留为历史**（`db.go` 有按 uuid 查历史的接口）。

@@ -31,6 +31,12 @@ import (
 // 保证「注入命令自身被 PTY 回显」时回显文本中不会出现完整标记串（详见 buildExecScript）。
 const tokRoot = "YUFU"
 
+// execTmpPrefix 注入脚本在目标机上落地临时文件的前缀。
+// 用户脚本与驱动脚本都写成该前缀下的 .sh，最后一行执行并就地 rm -f 清理。
+// 文件驱动（而非把收尾命令预排在 tty 输入队列）是为了规避 sudo/apt/ssh 等会调
+// tcflush 清空 tty 输入队列、把排在后面的 echo "$__YT"/echo "EXIT=$?" 冲掉的故障。
+const execTmpPrefix = "/tmp/.yufu_exec_"
+
 // b64LineWidth 注入脚本里 base64 每行长度。远小于 tty 规范模式的 4096 字节/行上限，
 // 留足余量给回显与行首提示符。
 const b64LineWidth = 512
@@ -209,8 +215,25 @@ type ExecResult struct {
 //  3. sudo 先探测再执行（`if sudo -n true; then ... else ... fi`），而不是
 //     `sudo -n bash || bash` —— 后者在脚本自身返回非 0 时会把命令重跑一遍。
 func buildExecScript(command, tag string) string {
-	b64 := base64.StdEncoding.EncodeToString([]byte(command))
-	tmp := "/tmp/.yufu_exec_" + tag + ".sh"
+	inner := execTmpPrefix + "cmd_" + tag + ".sh"  // 用户脚本
+	driver := execTmpPrefix + "drv_" + tag + ".sh" // 驱动脚本（产出标记与退出码）
+
+	// driver 由 bash 从**文件**读取执行，不经 tty。这一点是整个设计的关键：
+	// 早期版本把 `echo "$__YT"` / `echo "EXIT=$?"` 直接排在 tty 输入队列里等 bash 逐行读，
+	// 结果真机多机复测时装了 sudo 的机器全部超时 —— sudo 会 tcflush 清空 tty 输入队列，
+	// 把排在后面的收尾命令整段冲掉（命令本身跑完了、输出也对，就是永远等不到结束标记）。
+	// apt/dialog/ssh 等读 tty 的命令同样会造成这个后果，而用户的部署脚本里这些太常见。
+	// 放进文件后，收尾逻辑与 tty 队列彻底解耦。
+	var d strings.Builder
+	d.WriteString("__YP=" + tokRoot + "\n")
+	d.WriteString("__YT=\"${__YP}_EXEC_" + tag + "\"\n")
+	d.WriteString("echo \"$__YT\"\n")
+	// </dev/null：任何读 stdin 的命令立刻拿到 EOF，不会把整批命令挂到超时
+	d.WriteString("if sudo -n true 2>/dev/null </dev/null; then sudo -n bash " + inner +
+		" 2>&1 </dev/null; else bash " + inner + " 2>&1 </dev/null; fi\n")
+	d.WriteString("echo \"EXIT=$?\"\n")
+	d.WriteString("echo \"$__YT\"\n")
+
 	var b strings.Builder
 	b.WriteString("stty -echo 2>/dev/null\n")
 	// 清空提示符：PS1 是 bash 主动打印的，stty -echo 关不掉它。不清的话每台机器的输出里
@@ -219,10 +242,21 @@ func buildExecScript(command, tag string) string {
 	b.WriteString("PS1=\nPROMPT_COMMAND=\n")
 	// 关掉 readline 的 bracketed paste，否则每次显示提示符都吐 \e[?2004h / \e[?2004l
 	b.WriteString("bind 'set enable-bracketed-paste off' 2>/dev/null\n")
-	b.WriteString("base64 -d > " + tmp + " <<'YUFU_EOF'\n")
-	// base64 必须按行折叠：PTY 处于规范（canonical）模式时，tty 行缓冲对单行有 4096 字节
-	// 上限，超长的一行会被内核丢弃/截断，几 KB 的部署脚本就会静默损坏。
-	// base64 -d 本身能吃多行输入，折叠没有副作用。
+	writeB64Heredoc(&b, inner, command, "YUFU_EOF1")
+	writeB64Heredoc(&b, driver, d.String(), "YUFU_EOF2")
+	// 执行与清理必须在**同一行**：bash 按行读取，这一整行被读走后 tty 输入队列即为空，
+	// 之后无论用户脚本里的 sudo/apt 怎么折腾 tty，都没有待读命令可被冲掉。
+	b.WriteString("bash " + driver + "; rm -f " + driver + " " + inner + "\n")
+	return b.String()
+}
+
+// writeB64Heredoc 以 base64 heredoc 的形式把 content 写到目标机的 path。
+// base64 必须按行折叠：PTY 处于规范（canonical）模式时，tty 行缓冲对单行有 4096 字节
+// 上限，超长的一行会被内核丢弃/截断，几 KB 的部署脚本就会静默损坏。
+// base64 -d 本身能吃多行输入，折叠没有副作用。
+func writeB64Heredoc(b *strings.Builder, path, content, eof string) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(content))
+	b.WriteString("base64 -d > " + path + " <<'" + eof + "'\n")
 	for i := 0; i < len(b64); i += b64LineWidth {
 		end := i + b64LineWidth
 		if end > len(b64) {
@@ -230,15 +264,7 @@ func buildExecScript(command, tag string) string {
 		}
 		b.WriteString(b64[i:end] + "\n")
 	}
-	b.WriteString("YUFU_EOF\n")
-	b.WriteString("__YP=" + tokRoot + "\n")
-	b.WriteString("__YT=\"${__YP}_EXEC_" + tag + "\"\n")
-	b.WriteString("echo \"$__YT\"\n")
-	b.WriteString("if sudo -n true 2>/dev/null; then sudo -n bash " + tmp + " 2>&1; else bash " + tmp + " 2>&1; fi\n")
-	b.WriteString("echo \"EXIT=$?\"\n")
-	b.WriteString("echo \"$__YT\"\n")
-	b.WriteString("rm -f " + tmp + "\n")
-	return b.String()
+	b.WriteString(eof + "\n")
 }
 
 // runExec 对单台 agent 执行一段脚本，返回结果。
