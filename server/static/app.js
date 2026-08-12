@@ -985,14 +985,20 @@ function bindListEvents(root) {
   root.querySelectorAll('.btn-del').forEach(btn => { btn.onclick = e => { e.stopPropagation(); deleteAgent(btn.dataset.uuid); }; });
   bindCardCheckboxes(root);
   bindAliasInputs('.list-name');
-  const sa = root.querySelector('#selectAllChk');
+  // 注意：虚拟滚动（list.length > VIRTUAL_THRESHOLD）下 bindListEvents 的 root 是
+  // <tbody> 窗口，而 #selectAllChk 在 <thead> 里，root.querySelector 会返回 null、
+  // 导致全选框的 onchange 永远没绑上（千台以上分组点全选=选 0 台）。
+  // 因此这里统一从滚动容器 agentsScrollEl 里找勾选框，两种渲染模式都能命中。
+  const sa = agentsScrollEl.querySelector('#selectAllChk');
   if (sa) {
-    const list = currentPageList();
+    // 全选基于整组筛选结果（filteredAgents 全量），不受分页/虚拟滚动影响：
+    // 点全选 = 选中当前分组内所有机器，满足「千台分组一键全选并批量编辑」的需求。
+    const list = filteredAgents();
     sa.checked = list.length > 0 && list.every(a => state.selected.has(a.uuid));
     sa.onchange = (e) => {
       e.stopPropagation();
       const checked = sa.checked;
-      currentPageList().forEach(a => {
+      filteredAgents().forEach(a => {
         if (checked) state.selected.add(a.uuid);
         else state.selected.delete(a.uuid);
       });
