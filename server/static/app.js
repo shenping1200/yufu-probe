@@ -792,12 +792,16 @@ function cardCols() {
   const cw = (agentsScrollEl.clientWidth || 1200) - 56; // 减去 .agents-grid 左右内边距
   return Math.max(1, Math.floor((cw + CARD_GAP) / (CARD_MIN_W + CARD_GAP)));
 }
+// 卡片视图同样用骨架持久化：虚拟滚动下仅在模式切换或列数变化时才重建网格容器，
+// 避免每帧整网格 innerHTML 重建 + 滚动复位造成的抖动（与列表视图同源）。
+let lastCardMode = '';
+let lastCardCols = -1;
 function renderCard() {
   const scroll = agentsScrollEl;
   const list = currentPageList();
-  const saved = scroll.scrollTop;
   if (list.length === 0) {
     scroll.innerHTML = `<div class="empty-tip">该分组下暂无客户端</div>`;
+    lastCardMode = 'empty';
     return;
   }
   if (list.length <= VIRTUAL_THRESHOLD) {
@@ -805,17 +809,23 @@ function renderCard() {
     for (const a of list) html += cardHTML(a);
     scroll.innerHTML = `<div class="agents-grid">${html}</div>`;
     bindCardEvents(scroll);
+    lastCardMode = 'full';
     return;
   }
-  // 虚拟滚动：网格容器高度撑满 N 行，仅渲染可视窗口内的卡片
+  // 虚拟滚动：网格容器高度撑满 N 行，仅渲染可视窗口内的卡片。
+  // 仅当从非虚拟模式切换过来、列数变化（窗口缩放）或骨架丢失时才重建网格容器，
+  // 之后每帧只刷新可视窗口，消除抖动。
   const cols = cardCols();
   const rowH = CARD_H + CARD_GAP;
   const rows = Math.ceil(list.length / cols);
   const totalH = rows * CARD_H + (rows - 1) * CARD_GAP;
-  scroll.innerHTML =
-    `<div class="agents-grid virtual" style="grid-template-columns:repeat(${cols},1fr);grid-auto-rows:${CARD_H}px;height:${totalH}px;"></div>`;
-  renderCardWindow(saved);
-  scroll.scrollTop = saved;
+  if (lastCardMode !== 'virt' || lastCardCols !== cols || !scroll.querySelector('.agents-grid.virtual')) {
+    scroll.innerHTML =
+      `<div class="agents-grid virtual" style="grid-template-columns:repeat(${cols},1fr);grid-auto-rows:${CARD_H}px;height:${totalH}px;"></div>`;
+    lastCardMode = 'virt';
+    lastCardCols = cols;
+  }
+  renderCardWindow(scroll.scrollTop);
 }
 function renderCardWindow(scrollTop) {
   const scroll = agentsScrollEl;
@@ -933,10 +943,14 @@ function listRowHTML(a) {
 
 // 列表视图：行高钉死 64px。超过阈值时用上下占位行撑起总高、仅渲染可视行（虚拟滚动）
 const LIST_ROW_H = 64;
+// 记录上一次列表渲染模式（'empty'|'full'|'virt'）。虚拟滚动下仅当模式切换（或骨架
+// 丢失，如从卡片视图切回）时才重建表骨架；之后每帧数据更新只刷新可视窗口（renderListWindow），
+// 不再销毁表头、不再复位滚动位置——这是「列表一直抖、静不下来」的根因（每帧整表 innerHTML
+// 重建 + scrollTop 归零再还原）。
+let lastListMode = '';
 function renderList() {
   const scroll = agentsScrollEl;
   const list = currentPageList();
-  const saved = scroll.scrollTop;
   const thead = `
     <thead>
       <tr>
@@ -947,6 +961,7 @@ function renderList() {
     </thead>`;
   if (list.length === 0) {
     scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody><tr><td colspan="10" class="empty-tip">该分组下暂无客户端</td></tr></tbody></table></div>`;
+    lastListMode = 'empty';
     return;
   }
   if (list.length <= VIRTUAL_THRESHOLD) {
@@ -954,12 +969,16 @@ function renderList() {
     for (const a of list) rows += listRowHTML(a);
     scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody>${rows}</tbody></table></div>`;
     bindListEvents(scroll);
+    lastListMode = 'full';
     return;
   }
-  // 虚拟滚动：tbody 用上下占位行撑起 N*64px 总高，只渲染可视窗口内的行
-  scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody></tbody></table></div>`;
-  renderListWindow(saved);
-  scroll.scrollTop = saved;
+  // 虚拟滚动：tbody 用上下占位行撑起 N*64px 总高，只渲染可视窗口内的行。
+  // 仅当从非虚拟模式切换过来（或骨架不存在）时重建表骨架，避免每帧整体重建造成抖动。
+  if (lastListMode !== 'virt' || !scroll.querySelector('table')) {
+    scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody></tbody></table></div>`;
+    lastListMode = 'virt';
+  }
+  renderListWindow(scroll.scrollTop);
 }
 function renderListWindow(scrollTop) {
   const scroll = agentsScrollEl;
@@ -991,14 +1010,15 @@ function bindListEvents(root) {
   // 因此这里统一从滚动容器 agentsScrollEl 里找勾选框，两种渲染模式都能命中。
   const sa = agentsScrollEl.querySelector('#selectAllChk');
   if (sa) {
-    // 全选基于整组筛选结果（filteredAgents 全量），不受分页/虚拟滚动影响：
-    // 点全选 = 选中当前分组内所有机器，满足「千台分组一键全选并批量编辑」的需求。
-    const list = filteredAgents();
+    // 语义：表头全选 = 当前页可见行（标准表格 UX）。pageSize='all' 时「当前页」即整组，
+    // 满足「千台分组展示全部 + 一键全选整组」；把每页设成 N 时只选当前页那 N 台，
+    // 不会再把整组都选走（之前误改成 filteredAgents() 全量导致的回归）。
+    const list = currentPageList();
     sa.checked = list.length > 0 && list.every(a => state.selected.has(a.uuid));
     sa.onchange = (e) => {
       e.stopPropagation();
       const checked = sa.checked;
-      filteredAgents().forEach(a => {
+      currentPageList().forEach(a => {
         if (checked) state.selected.add(a.uuid);
         else state.selected.delete(a.uuid);
       });
