@@ -254,11 +254,15 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	}
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	log.Printf("[deploy] 调度器已启动（每 10s 扫描一次启用规则）")
 	for range ticker.C {
 		rules, err := ListDeployRules(db)
 		if err != nil {
 			log.Printf("[deploy] 读取规则失败: %v", err)
 			continue
+		}
+		if len(rules) > 0 {
+			log.Printf("[deploy] tick: 扫描到 %d 条规则", len(rules))
 		}
 		var changed int32
 		for i := range rules {
