@@ -287,7 +287,15 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 			if len(cands) == 0 {
 				continue
 			}
-			sem := make(chan struct{}, rule.Concurrency)
+			log.Printf("[deploy] 规则 %d(%s) 命中候选 %d 台: %v", rule.ID, rule.Name, len(cands), cands)
+
+			// semaphore 容量兜底：并发值若缺失/非法（≤0）至少给 1，
+			// 否则 make(chan,0) 会变成无缓冲 channel，sem<- 永久阻塞 → wg.Wait 永不返回 → ticker 冻结。
+			cap := rule.Concurrency
+			if cap <= 0 {
+				cap = 1
+			}
+			sem := make(chan struct{}, cap)
 			var wg sync.WaitGroup
 			for _, uuid := range cands {
 				mu.Lock()
@@ -297,37 +305,92 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 				}
 				inFlight[uuid] = struct{}{}
 				mu.Unlock()
+
 				wg.Add(1)
 				go func(u string) {
 					defer wg.Done()
 					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[deploy] 规则 %d 处理机器 %s 时 panic: %v", rule.ID, u, r)
+						}
 						mu.Lock()
 						delete(inFlight, u)
 						mu.Unlock()
 					}()
 					sem <- struct{}{}
 					defer func() { <-sem }()
+
 					agent := hub.findAgent(u)
 					if agent == nil {
 						return // 离线，下一轮再试
 					}
-					res := runExec(agent, u, rule.Command, time.Duration(rule.Timeout)*time.Second)
-					if res.Status == "ok" && res.ExitCode == 0 {
-						if rule.TargetGroup != "" {
-							_ = SetAgentGroup(db, u, rule.TargetGroup)
-							live.PatchAgentFields(u, &rule.TargetGroup, nil, nil)
-							live.AddGroup(rule.TargetGroup)
-						}
-						_ = setDeployState(db, u, "done")
-					} else {
-						if rule.FailGroup != "" {
-							_ = SetAgentGroup(db, u, rule.FailGroup)
-							live.PatchAgentFields(u, &rule.FailGroup, nil, nil)
-							live.AddGroup(rule.FailGroup)
-						}
-						_ = setDeployState(db, u, "failed")
-						log.Printf("[deploy] 规则 %d(%s) 机器 %s 部署失败: status=%s exit=%d err=%s", rule.ID, rule.Name, u, res.Status, res.ExitCode, res.Error)
+
+					// 用带硬超时的 goroutine 包裹 runExec：即便某次下发在底层（如 safeWrite）
+					// 卡死，外层 select 也能兜底返回，绝不让 ticker 循环冻结。
+					execTimeout := time.Duration(rule.Timeout) * time.Second
+					if execTimeout <= 0 {
+						execTimeout = 60 * time.Second
 					}
+					resCh := make(chan ExecResult, 1)
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								log.Printf("[deploy] 规则 %d 机器 %s runExec panic: %v", rule.ID, u, r)
+								resCh <- ExecResult{UUID: u, Status: "error", Error: "内部错误"}
+							}
+						}()
+						resCh <- runExec(agent, u, rule.Command, execTimeout)
+					}()
+					var res ExecResult
+					select {
+					case res = <-resCh:
+					case <-time.After(execTimeout + 10*time.Second):
+						res = ExecResult{UUID: u, Status: "timeout", Error: "部署执行超出硬超时"}
+						log.Printf("[deploy] 规则 %d 机器 %s 执行超出硬超时（放弃本机，下轮重试）", rule.ID, u)
+					}
+					log.Printf("[deploy] 规则 %d 机器 %s 执行结果: status=%s exit=%d", rule.ID, u, res.Status, res.ExitCode)
+
+					success := res.Status == "ok" && res.ExitCode == 0
+
+					// 状态更新同样置于硬超时保护下：DB 写入或 live 变更若意外挂起，
+					// 最多 20s 后放弃，保证 wg.Done 必然执行、循环不会冻结。
+					updDone := make(chan struct{})
+					go func() {
+						defer close(updDone)
+						defer func() {
+							if r := recover(); r != nil {
+								log.Printf("[deploy] 规则 %d 机器 %s 状态更新 panic: %v", rule.ID, u, r)
+							}
+						}()
+						if success {
+							if rule.TargetGroup != "" {
+								if err := SetAgentGroup(db, u, rule.TargetGroup); err != nil {
+									log.Printf("[deploy] 规则 %d 机器 %s 移动到目标分组失败: %v", rule.ID, u, err)
+								} else {
+									live.PatchAgentFields(u, &rule.TargetGroup, nil, nil)
+									live.AddGroup(rule.TargetGroup)
+								}
+							}
+							_ = setDeployState(db, u, "done")
+						} else {
+							if rule.FailGroup != "" {
+								if err := SetAgentGroup(db, u, rule.FailGroup); err != nil {
+									log.Printf("[deploy] 规则 %d 机器 %s 移动到失败分组失败: %v", rule.ID, u, err)
+								} else {
+									live.PatchAgentFields(u, &rule.FailGroup, nil, nil)
+									live.AddGroup(rule.FailGroup)
+								}
+							}
+							_ = setDeployState(db, u, "failed")
+							log.Printf("[deploy] 规则 %d(%s) 机器 %s 部署失败: status=%s exit=%d err=%s stdout=%s", rule.ID, rule.Name, u, res.Status, res.ExitCode, res.Error, res.Stdout)
+						}
+					}()
+					select {
+					case <-updDone:
+					case <-time.After(20 * time.Second):
+						log.Printf("[deploy] 规则 %d 机器 %s 状态更新超出硬超时（放弃）", rule.ID, u)
+					}
+
 					atomic.StoreInt32(&changed, 1)
 				}(uuid)
 			}

@@ -288,10 +288,17 @@ func runExec(agent *Client, agentUUID, command string, timeout time.Duration, da
 	registerExec(ses.sid, ses)
 	defer unregisterExec(ses.sid)
 
+	// 写超时保护：agent 连接默认不设写 deadline，若对端 TCP 发送缓冲满且不再读取，
+	// WriteMessage 会永久阻塞，进而拖死调用方（批量执行 / 自动部署调度）。
+	// 这里仅给「开 shell + 注入」这两段只发不收的写操作一个独立超时；
+	// 等结束标记阶段是收数据（由 read loop 驱动），不碰写，故注入完成后立即解除 deadline。
+	defer agent.conn.SetWriteDeadline(time.Time{})
+
 	// 1) 开 shell
 	openMsg, _ := json.Marshal(map[string]interface{}{
 		"action": "shell_open", "session": ses.sid, "cols": 200, "rows": 24,
 	})
+	agent.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	if err := agent.safeWrite(openMsg); err != nil {
 		return ExecResult{UUID: ses.uuid, Status: "error", Error: "开 shell 失败: " + err.Error()}
 	}
@@ -310,11 +317,14 @@ func runExec(agent *Client, agentUUID, command string, timeout time.Duration, da
 		}
 		payload := base64.StdEncoding.EncodeToString([]byte(script[i:end]))
 		fwd, _ := json.Marshal(map[string]string{"action": "shell_input", "session": ses.sid, "data": payload})
+		agent.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 		if err := agent.safeWrite(fwd); err != nil {
 			closeShell()
 			return ExecResult{UUID: ses.uuid, Status: "error", Error: "注入命令失败: " + err.Error()}
 		}
 	}
+	// 注入完成：解除写超时，接下来的「等结束标记」阶段只收数据、不再写。
+	agent.conn.SetWriteDeadline(time.Time{})
 
 	// 3) 等结束标记 / 中止 / 超时。数据由 agentWSHandler → feedExecData 灌入，这里只等。
 	select {
