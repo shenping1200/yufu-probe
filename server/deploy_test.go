@@ -148,6 +148,24 @@ func TestDeployStateIdempotent(t *testing.T) {
 	}
 }
 
+func TestResetDeployState(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`INSERT INTO agents (uuid, group_name, online, deploy_state, last_seen) VALUES ('x','',1,'done',1)`); err != nil {
+		t.Fatal(err)
+	}
+	// 标记为 done 后不应被选中
+	if got, _ := pendingDeployUUIDs(db, []string{""}); len(got) != 0 {
+		t.Fatal("done 状态不应被选中")
+	}
+	// 管理员把机器改分组时（resetDeployState）应清空终态，使其重新成为待部署
+	if err := resetDeployState(db, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := pendingDeployUUIDs(db, []string{""}); len(got) != 1 {
+		t.Fatal("resetDeployState 后机器应重新成为待部署（可被自动部署规则接管）")
+	}
+}
+
 func TestEffectiveSSHPassword(t *testing.T) {
 	// 显式设置 ssh_password 时优先
 	if got := effectiveSSHPassword(&Config{SSHPassword: "ssh-pass", Admin: AdminConfig{Password: "admin-pass"}}); got != "ssh-pass" {

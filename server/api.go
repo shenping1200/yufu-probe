@@ -252,8 +252,10 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 			_ = json.Unmarshal(v, &remark)
 		}
 		group := ""
+		groupProvided := false
 		if v, ok := raw["group"]; ok {
 			_ = json.Unmarshal(v, &group)
+			groupProvided = true
 		}
 		var expireAt *int64
 		if v, ok := raw["expire_at"]; ok {
@@ -273,6 +275,13 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 		// 保持内存态「分组名注册表」与 DB 一致：通过编辑弹窗手输的新名字也要注册进来
 		if group != "" {
 			live.AddGroup(group)
+		}
+		// 管理员改分组即重新武装自动部署：清空 done/failed 终态，
+		// 使本机进入源分组后能被规则重新部署（见 resetDeployState）。
+		if groupProvided {
+			if err := resetDeployState(db, uuid); err != nil {
+				log.Printf("[api] 清空 %s deploy_state 失败: %v", uuid, err)
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
@@ -482,6 +491,11 @@ func batchUpdateAgentsHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 				live.PatchAgentFields(uuid, req.Group, nil, nil)
 				if *req.Group != "" {
 					live.AddGroup(*req.Group)
+				}
+				// 管理员改分组即重新武装自动部署：清空 done/failed 终态，
+				// 使本机进入源分组后能被规则重新部署（见 resetDeployState）。
+				if err := resetDeployState(db, uuid); err != nil {
+					log.Printf("[api] 清空 %s deploy_state 失败: %v", uuid, err)
 				}
 			}
 			if req.Remark != nil {

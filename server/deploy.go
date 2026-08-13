@@ -197,6 +197,17 @@ func setDeployState(db *sql.DB, uuid, state string) error {
 	return err
 }
 
+// resetDeployState 把机器部署状态清空回待部署（NULL）。
+// 仅在管理员手动改分组时调用：机器从目标/失败分组被拖回源分组，应当被当作"新机器"
+// 重新走一遍自动部署，否则旧的 done/failed 终态会让 pendingDeployUUIDs 把它过滤掉，
+// 导致"明明挪进了源分组却再也不部署"的反直觉行为。
+// 调度器自身的 SetAgentGroup→setDeployState(done/failed) 流程不受影响
+// （顺序是先改分组、再置终态，本函数不参与该路径）。
+func resetDeployState(db *sql.DB, uuid string) error {
+	_, err := db.Exec(`UPDATE agents SET deploy_state=NULL WHERE uuid=?`, uuid)
+	return err
+}
+
 // pendingDeployUUIDs 返回「处于源分组、尚未部署完成、且在线」的机器 uuid 列表
 func pendingDeployUUIDs(db *sql.DB, sources []string) ([]string, error) {
 	if len(sources) == 0 {
@@ -260,9 +271,6 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 		if err != nil {
 			log.Printf("[deploy] 读取规则失败: %v", err)
 			continue
-		}
-		if len(rules) > 0 {
-			log.Printf("[deploy] tick: 扫描到 %d 条规则", len(rules))
 		}
 		var changed int32
 		for i := range rules {
