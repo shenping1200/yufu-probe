@@ -662,3 +662,18 @@ button.danger:hover { background: var(--danger); color: #fff; }
 .pg-nav button:hover:not(:disabled) { border-color: var(--primary); color: var(--text); }
 .pg-nav button:disabled { opacity: .45; cursor: not-allowed; }
 .pg-info { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+
+/* 自动部署规则 */
+.deploy-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; margin: 4px 0; }
+.deploy-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+.deploy-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.deploy-meta b { font-size: 14px; }
+.deploy-tags { font-size: 12px; color: var(--text-2); word-break: break-all; }
+.deploy-state { font-size: 12px; }
+.deploy-acts { display: flex; gap: 6px; flex-shrink: 0; }
+.deploy-form { display: flex; flex-direction: column; gap: 10px; margin: 4px 0; }
+.deploy-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+.deploy-form .gp-input { color: var(--text); background: var(--bg-2); }
+.dr-src { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 6px 0; }
+.dr-src-item { display: inline-flex; align-items: center; gap: 4px; flex-direction: row; font-size: 13px; color: var(--text); }
+.dr-enable { flex-direction: row !important; align-items: center; gap: 6px; color: var(--text) !important; }

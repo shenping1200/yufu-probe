@@ -169,6 +169,9 @@ document.getElementById('logoutBtn').onclick = async () => {
   showLogin();
 };
 
+// 自动部署规则入口（仅管理员，访客在 openDeployRules 内拦截）
+document.getElementById('deployBtn').onclick = openDeployRules;
+
 // 最近一次已应用的 agents 广播序列号；小于它的帧视为过期直接丢弃，
 // 避免后端发送缓冲里积压的旧快照覆盖掉前端乐观更新（详见 hub.go 的 drop-oldest 修复）。
 let lastAgentsSeq = 0;
@@ -1716,6 +1719,168 @@ async function openBatchCmd() {
       alert('批量命令失败：' + e.message);
       m.ok.disabled = false;
       m.ok.textContent = '执行';
+    }
+  };
+}
+
+// 自动部署规则管理：列表 + 新增/编辑/删除/启停
+async function openDeployRules() {
+  if (isVisitor()) { alert('访客无权限'); return; }
+  const m = openCenterModal('自动部署规则');
+  m.ok.style.display = 'none';
+
+  const listWrap = document.createElement('div');
+  listWrap.className = 'deploy-list';
+  m.box.insertBefore(listWrap, m.box.querySelector('.gp-actions'));
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'gp-btn ok';
+  addBtn.textContent = '＋ 新增规则';
+  addBtn.onclick = () => openDeployRuleForm(null);
+  m.box.insertBefore(addBtn, m.box.querySelector('.gp-actions'));
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/deploy-rules');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const rules = await r.json();
+      renderDeployList(listWrap, rules, refresh);
+    } catch (e) {
+      listWrap.textContent = '加载失败：' + e.message;
+    }
+  }
+  await refresh();
+}
+
+function renderDeployList(wrap, rules, refresh) {
+  if (!rules.length) {
+    wrap.innerHTML = '<div class="gp-hint">还没有规则。点「新增规则」：落入源分组的新机器会自动执行部署命令，成功进目标分组、失败进失败分组。</div>';
+    return;
+  }
+  wrap.innerHTML = '';
+  rules.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'deploy-row';
+    const src = (r.source_groups || []).join('、') || '（未指定）';
+    const meta = document.createElement('div');
+    meta.className = 'deploy-meta';
+    meta.innerHTML =
+      '<b>' + escapeHtml(r.name || '(未命名)') + '</b>' +
+      '<span class="deploy-tags">源: ' + escapeHtml(src) + ' → 成功: ' + escapeHtml(r.target_group || '（不变）') +
+      ' / 失败: ' + escapeHtml(r.fail_group || '（不变）') + '</span>' +
+      '<span class="deploy-state">' + (r.enabled ? '✅启用' : '⏸停用') + '</span>';
+    const acts = document.createElement('div');
+    acts.className = 'deploy-acts';
+    const edit = document.createElement('button');
+    edit.className = 'gp-btn'; edit.textContent = '编辑';
+    edit.onclick = () => openDeployRuleForm(r);
+    const toggle = document.createElement('button');
+    toggle.className = 'gp-btn'; toggle.textContent = r.enabled ? '停用' : '启用';
+    toggle.onclick = async () => {
+      await fetch('/api/deploy-rules/' + r.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !r.enabled }),
+      });
+      refresh();
+    };
+    const del = document.createElement('button');
+    del.className = 'gp-btn danger'; del.textContent = '删除';
+    del.onclick = async () => {
+      if (!confirm('删除规则「' + (r.name || r.id) + '」？')) return;
+      await fetch('/api/deploy-rules/' + r.id, { method: 'DELETE' });
+      refresh();
+    };
+    acts.appendChild(edit); acts.appendChild(toggle); acts.appendChild(del);
+    row.appendChild(meta); row.appendChild(acts);
+    wrap.appendChild(row);
+  });
+}
+
+// 规则表单（rule=null 新增；否则编辑）
+function openDeployRuleForm(rule) {
+  const m = openCenterModal(rule ? '编辑规则' : '新增自动部署规则');
+  const isEdit = !!rule;
+  const grpOptions = ['', ...[...state.groups].sort((x, y) => x.localeCompare(y, 'zh'))];
+
+  const form = document.createElement('div');
+  form.className = 'deploy-form';
+  form.innerHTML =
+    '<label>规则名称<input class="gp-input" id="drName" placeholder="如：新机初始化"></label>' +
+    '<label>源分组（可多选，机器落入这些分组即触发部署）<div class="dr-src" id="drSrc"></div></label>' +
+    '<label>部署命令（多行，支持 sudo -n）<textarea class="gp-input" id="drCmd" rows="6" placeholder="apt update&#10;apt install -y curl"></textarea></label>' +
+    '<label>成功后分配到<select class="gp-input" id="drTarget"></select></label>' +
+    '<label>失败后分配到<select class="gp-input" id="drFail"></select></label>' +
+    '<div class="gp-row">' +
+      '<label>并发数<input class="gp-input gp-num" id="drConc" type="number" value="50" min="1" max="200"></label>' +
+      '<label>超时(秒)<input class="gp-input gp-num" id="drTimeout" type="number" value="60" min="5" max="600"></label>' +
+    '</div>' +
+    '<label>Web SSH 密码<input class="gp-input" id="drPw" type="password" placeholder="' + (isEdit ? '（留空保留原密码）' : '必填') + '"></label>' +
+    '<label class="dr-enable"><input type="checkbox" id="drEnabled" checked> 启用此规则</label>';
+  m.box.insertBefore(form, m.box.querySelector('.gp-actions'));
+
+  // 源分组多选
+  const srcBox = form.querySelector('#drSrc');
+  const cur = new Set(rule ? (rule.source_groups || []) : ['']);
+  grpOptions.forEach(g => {
+    const lab = document.createElement('label');
+    lab.className = 'dr-src-item';
+    lab.innerHTML = '<input type="checkbox" class="dr-src-chk" value="' + escapeHtml(g) + '"' + (cur.has(g) ? ' checked' : '') + '> ' + escapeHtml(g === '' ? '未分组' : g);
+    srcBox.appendChild(lab);
+  });
+
+  // 目标/失败分组下拉
+  const fillSel = (el) => {
+    el.className = 'gp-input';
+    grpOptions.forEach(g => {
+      const o = document.createElement('option');
+      o.value = g; o.textContent = g === '' ? '（未分组/不变）' : g;
+      el.appendChild(o);
+    });
+  };
+  fillSel(form.querySelector('#drTarget'));
+  fillSel(form.querySelector('#drFail'));
+
+  if (rule) {
+    form.querySelector('#drName').value = rule.name || '';
+    form.querySelector('#drCmd').value = rule.command || '';
+    form.querySelector('#drTarget').value = rule.target_group || '';
+    form.querySelector('#drFail').value = rule.fail_group || '';
+    form.querySelector('#drConc').value = rule.concurrency || 50;
+    form.querySelector('#drTimeout').value = rule.timeout || 60;
+    form.querySelector('#drEnabled').checked = rule.enabled;
+  }
+
+  m.ok.textContent = isEdit ? '保存' : '创建';
+  m.ok.onclick = async () => {
+    const name = form.querySelector('#drName').value.trim();
+    const cmd = form.querySelector('#drCmd').value;
+    const pw = form.querySelector('#drPw').value;
+    if (!cmd.trim()) { alert('请填写部署命令'); return; }
+    if (!isEdit && !pw) { alert('请填写 Web SSH 密码'); return; }
+    const srcs = [...form.querySelectorAll('.dr-src-chk:checked')].map(c => c.value);
+    const body = {
+      name, command: cmd,
+      source_groups: srcs,
+      target_group: form.querySelector('#drTarget').value,
+      fail_group: form.querySelector('#drFail').value,
+      concurrency: parseInt(form.querySelector('#drConc').value, 10) || 50,
+      timeout: parseInt(form.querySelector('#drTimeout').value, 10) || 60,
+      enabled: form.querySelector('#drEnabled').checked,
+      password: pw,
+    };
+    try {
+      const r = await fetch('/api/deploy-rules' + (isEdit ? '/' + rule.id : ''), {
+        method: isEdit ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 400) { alert('命令与密码必填'); return; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      m.close();
+      openDeployRules();
+    } catch (e) {
+      alert('保存失败：' + e.message);
     }
   };
 }

@@ -794,6 +794,11 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/agents", requireAdmin(db, batchUpdateAgentsHandler(db, hub))).Methods("PATCH")
 	// 批量命令下发：管理员 + Web SSH 密码，向一批机器并发执行脚本
 	r.HandleFunc("/api/agents/exec", requireAdmin(db, execHandler(cfg, db, hub))).Methods("POST")
+	// 自动部署规则（仅管理员）：列表/新建/更新/删除
+	r.HandleFunc("/api/deploy-rules", requireAdmin(db, deployRulesListHandler(db))).Methods("GET")
+	r.HandleFunc("/api/deploy-rules", requireAdmin(db, deployRulesCreateHandler(db))).Methods("POST")
+	r.HandleFunc("/api/deploy-rules/{id}", requireAdmin(db, deployRulesUpdateHandler(db))).Methods("PATCH")
+	r.HandleFunc("/api/deploy-rules/{id}", requireAdmin(db, deployRulesDeleteHandler(db))).Methods("DELETE")
 	// 分组级管理：列表（只读）访客可看；新建/重命名/删除仅管理员
 	r.HandleFunc("/api/groups", requireAdmin(db, createGroupHandler(db, hub))).Methods("POST")
 	r.HandleFunc("/api/groups", requireLogin(db, listGroupsHandler(db))).Methods("GET")

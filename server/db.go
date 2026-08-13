@@ -115,6 +115,19 @@ func InitDB(path string) (*sql.DB, error) {
 			created_at INTEGER DEFAULT 0,
 			expires_at INTEGER DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS deploy_rules (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT DEFAULT '',
+			source_groups TEXT DEFAULT '[]',
+			command TEXT DEFAULT '',
+			target_group TEXT DEFAULT '',
+			fail_group TEXT DEFAULT '',
+			enabled INTEGER DEFAULT 1,
+			concurrency INTEGER DEFAULT 50,
+			timeout INTEGER DEFAULT 60,
+			ssh_password_enc TEXT DEFAULT '',
+			created_at INTEGER DEFAULT 0
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err = db.Exec(s); err != nil {
@@ -132,6 +145,8 @@ func InitDB(path string) (*sql.DB, error) {
 	db.Exec(`ALTER TABLE agents ADD COLUMN group_name TEXT DEFAULT ''`)
 	// 会话区分管理员/访客
 	db.Exec(`ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`)
+	// 自动部署：每台机器的部署状态（pending 待部署 / done 已成功 / failed 已失败）
+	db.Exec(`ALTER TABLE agents ADD COLUMN deploy_state TEXT DEFAULT 'pending'`)
 	return db, nil
 }
 
