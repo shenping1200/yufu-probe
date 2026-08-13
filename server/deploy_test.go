@@ -147,3 +147,18 @@ func TestDeployStateIdempotent(t *testing.T) {
 		t.Fatal("标记为 done 后不应再被选中（幂等，防重复部署）")
 	}
 }
+
+func TestEffectiveSSHPassword(t *testing.T) {
+	// 显式设置 ssh_password 时优先
+	if got := effectiveSSHPassword(&Config{SSHPassword: "ssh-pass", Admin: AdminConfig{Password: "admin-pass"}}); got != "ssh-pass" {
+		t.Fatalf("应优先返回 ssh_password，实际 %q", got)
+	}
+	// 未设置 ssh_password 时回退到管理员密码
+	if got := effectiveSSHPassword(&Config{Admin: AdminConfig{Password: "admin-pass"}}); got != "admin-pass" {
+		t.Fatalf("应回退到管理员密码，实际 %q", got)
+	}
+	// 两者皆空时返回空（调度器会跳过所有规则）
+	if got := effectiveSSHPassword(&Config{}); got != "" {
+		t.Fatalf("应返回空，实际 %q", got)
+	}
+}

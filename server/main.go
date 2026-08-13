@@ -80,7 +80,7 @@ func main() {
 
 	// 自动部署调度器：每 10s 扫描规则，对源分组内待部署且在线的机器自动下发命令，
 	// 成功(exit 0)→移到目标分组，失败/超时→移到失败分组。
-	go runDeployScheduler(db, hub)
+	go runDeployScheduler(cfg, db, hub)
 
 	router := setupRoutes(cfg, db, hub)
 	addr := fmt.Sprintf("%s:%d", cfg.Listen, cfg.Port)

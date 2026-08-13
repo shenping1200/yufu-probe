@@ -224,14 +224,33 @@ func pendingDeployUUIDs(db *sql.DB, sources []string) ([]string, error) {
 	return out, nil
 }
 
+// effectiveSSHPassword 解析出实际用于 Web SSH 鉴权的密码：显式设置的 ssh_password 优先，
+// 否则回退到管理员密码（与 terminal.go / exec.go 保持一致）。
+// 自动部署复用同一套 Web SSH 通道，因此规则里保存的密码也必须与这里一致才算鉴权通过。
+func effectiveSSHPassword(cfg *Config) string {
+	if cfg != nil && cfg.SSHPassword != "" {
+		return cfg.SSHPassword
+	}
+	if cfg != nil && cfg.Admin.Password != "" {
+		return cfg.Admin.Password
+	}
+	return ""
+}
+
 // runDeployScheduler 自动部署调度器：每 10s 扫描启用规则，对源分组内「待部署且在线」的机器
 // 并发下发部署命令；成功(exit 0)→移到目标分组并标记 done；失败/超时→移到失败分组并标记 failed。
 // 用内存 in-flight 集防止同一台被重复捞取；进程重启后 pending 机器会重新部署（命令应幂等）。
-func runDeployScheduler(db *sql.DB, hub *Hub) {
+// 规则里保存的 Web SSH 密码必须与服务端配置一致（effectiveSSHPassword）才允许执行，
+// 否则视为配置错误，跳过该规则并记录日志（与浏览器终端手动输密码鉴权同口径）。
+func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	inFlight := make(map[string]struct{})
 	var mu sync.Mutex
 	if os.Getenv(deployKeyEnv) == "" {
 		log.Printf("[deploy] 警告：%s 未设置，已存密码的规则将无法解密（这些规则不会执行）", deployKeyEnv)
+	}
+	eff := effectiveSSHPassword(cfg)
+	if eff == "" {
+		log.Printf("[deploy] 警告：未配置 ssh_password 且管理员密码为空，自动部署规则将无法鉴权（全部跳过）")
 	}
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -252,8 +271,8 @@ func runDeployScheduler(db *sql.DB, hub *Hub) {
 				log.Printf("[deploy] 规则 %d(%s) 解密密码失败: %v（请检查 %s）", rule.ID, rule.Name, err, deployKeyEnv)
 				continue
 			}
-			if pw == "" {
-				log.Printf("[deploy] 规则 %d(%s) 未设置密码，跳过", rule.ID, rule.Name)
+			if pw != eff {
+				log.Printf("[deploy] 规则 %d(%s) 密码与服务器 Web SSH 密码不符，跳过（请在规则中填入正确的 Web SSH 密码）", rule.ID, rule.Name)
 				continue
 			}
 			cands, err := pendingDeployUUIDs(db, rule.SourceGroups)
