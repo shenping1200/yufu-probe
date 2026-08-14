@@ -71,6 +71,9 @@ func TestDeployRuleCRUD(t *testing.T) {
 	if got.Name != "r1" || len(got.SourceGroups) != 2 {
 		t.Fatalf("字段解析错误：%+v", got)
 	}
+	if got.Concurrency != 10 {
+		t.Fatalf("ListDeployRules 应正确返回 concurrency，实际 %d", got.Concurrency)
+	}
 	if !got.HasPassword {
 		t.Fatal("HasPassword 应为 true")
 	}

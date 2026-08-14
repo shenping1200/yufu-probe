@@ -157,6 +157,7 @@ func ListDeployRules(db *sql.DB) ([]DeployRule, error) {
 			_ = json.Unmarshal([]byte(src.String), &r.SourceGroups)
 		}
 		r.Enabled = enabled != 0
+		r.Concurrency = conc
 		if conc <= 0 {
 			r.Concurrency = 50
 		}
