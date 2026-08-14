@@ -1,5 +1,7 @@
 # 渔夫探针 (YuFu Probe)
 
+> 📜 开源协议：**MIT**（详见 [LICENSE](./LICENSE)）。欢迎 Star / Fork / 提交 PR。
+
 一套类似「哪吒探针」的轻量服务器监控工具，包含**客户端（Agent）**、**服务端（Server）** 与 **Web 界面**，全部用 Go 编写，单二进制部署、零外部依赖（纯 Go SQLite，无需数据库服务）。
 
 ## 功能
