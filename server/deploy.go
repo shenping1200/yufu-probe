@@ -474,6 +474,10 @@ func deployRulesListHandler(db *sql.DB) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		// 空列表必须返回 [] 而非 null，否则前端 rules.length 会对 null 抛 TypeError
+		if rules == nil {
+			rules = []DeployRule{}
+		}
 		writeJSON(w, rules)
 	}
 }
