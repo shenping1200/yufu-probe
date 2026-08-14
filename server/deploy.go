@@ -112,6 +112,32 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// GetDeployRuleByID 按 ID 加载单条规则（含密码密文，供 update handler 做 partial merge 用）
+func GetDeployRuleByID(db *sql.DB, id int64) (*DeployRule, error) {
+	var r DeployRule
+	var src, enc sql.NullString
+	var enabled, conc int
+	err := db.QueryRow(`SELECT id, name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, created_at, ssh_password_enc FROM deploy_rules WHERE id=?`, id).
+		Scan(&r.ID, &r.Name, &src, &r.Command, &r.TargetGroup, &r.FailGroup, &enabled, &conc, &r.Timeout, &r.CreatedAt, &enc)
+	if err != nil {
+		return nil, err
+	}
+	if src.Valid && src.String != "" {
+		_ = json.Unmarshal([]byte(src.String), &r.SourceGroups)
+	}
+	r.Enabled = enabled != 0
+	r.Concurrency = conc
+	if conc <= 0 {
+		r.Concurrency = 50
+	}
+	if r.Timeout <= 0 {
+		r.Timeout = 60
+	}
+	r.HasPassword = strings.TrimSpace(enc.String) != ""
+	r.pwEnc = enc.String
+	return &r, nil
+}
+
 // ListDeployRules 返回全部规则（不含密码密文，仅给 has_password 标记）
 func ListDeployRules(db *sql.DB) ([]DeployRule, error) {
 	rows, err := db.Query(`SELECT id, name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, created_at, ssh_password_enc FROM deploy_rules ORDER BY id`)
@@ -489,22 +515,44 @@ func deployRulesUpdateHandler(db *sql.DB) http.HandlerFunc {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		rule := &DeployRule{
-			Name:         req.Name,
-			SourceGroups: req.SourceGroups,
-			Command:      req.Command,
-			TargetGroup:  req.TargetGroup,
-			FailGroup:    req.FailGroup,
-			Enabled:      req.Enabled,
-			Concurrency:  req.Concurrency,
-			Timeout:      req.Timeout,
+
+		// Partial update：先加载现有规则，只覆盖请求中明确提供的非空字段。
+		// 这修复了「停用/启用」toggle 只发 {enabled} 时把其他字段清为零值的 bug。
+		existing, err := GetDeployRuleByID(db, id)
+		if err != nil {
+			http.Error(w, "rule not found", http.StatusNotFound)
+			return
+		}
+		rule := *existing // 副本
+		if req.Name != "" {
+			rule.Name = req.Name
+		}
+		if len(req.SourceGroups) > 0 {
+			rule.SourceGroups = req.SourceGroups
+		}
+		if req.Command != "" {
+			rule.Command = req.Command
+		}
+		if req.TargetGroup != "" {
+			rule.TargetGroup = req.TargetGroup
+		}
+		if req.FailGroup != "" {
+			rule.FailGroup = req.FailGroup
+		}
+		// enabled 是布尔值，始终覆盖（toggle 的核心用途）
+		rule.Enabled = req.Enabled
+		if req.Concurrency > 0 {
+			rule.Concurrency = req.Concurrency
+		}
+		if req.Timeout > 0 {
+			rule.Timeout = req.Timeout
 		}
 		var pw *string
 		if req.Password != "" {
 			p := req.Password
 			pw = &p
 		}
-		if err := UpdateDeployRule(db, id, rule, pw); err != nil {
+		if err := UpdateDeployRule(db, id, &rule, pw); err != nil {
 			http.Error(w, "internal error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

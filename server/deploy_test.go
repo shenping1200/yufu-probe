@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gorilla/mux"
 )
 
 func testDB(t *testing.T) *sql.DB {
@@ -231,3 +234,77 @@ func TestDeployPaused(t *testing.T) {
 		t.Fatal("恢复后 deploy_paused 应回到 0")
 	}
 }
+
+func TestDeployRulePartialUpdate(t *testing.T) {
+	os.Setenv(deployKeyEnv, "test-key-123")
+	defer os.Unsetenv(deployKeyEnv)
+	db := testDB(t)
+
+	// 创建一条完整规则
+	orig := &DeployRule{
+		Name: "完整规则", SourceGroups: []string{"src"}, Command: "apt update",
+		TargetGroup: "ok", FailGroup: "err", Enabled: true, Concurrency: 10, Timeout: 30,
+	}
+	if err := CreateDeployRule(db, orig, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := ListDeployRules(db)
+	id := rules[0].ID
+
+	// 用真实 mux 路由（确保 mux.Vars 能正确提取 {id}）
+	router := newmux()
+	router.Handle("/api/deploy-rules/{id}", deployRulesUpdateHandler(db))
+
+	// 模拟前端 toggle：只发 {enabled:false}，其他字段全零值
+	body, _ := json.Marshal(map[string]any{"enabled": false})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest("PATCH", fmt.Sprintf("/api/deploy-rules/%d", id), bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH 应 200，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 验证：enabled 变了，但其他字段保持原值
+	after, err := GetDeployRuleByID(db, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Enabled {
+		t.Fatal("应已停用")
+	}
+	if after.Name != "完整规则" {
+		t.Fatalf("name 应保留，实际 %q", after.Name)
+	}
+	if after.Command != "apt update" {
+		t.Fatalf("command 应保留，实际 %q", after.Command)
+	}
+	if len(after.SourceGroups) != 1 || after.SourceGroups[0] != "src" {
+		t.Fatalf("source_groups 应保留，实际 %v", after.SourceGroups)
+	}
+	if after.TargetGroup != "ok" {
+		t.Fatalf("target_group 应保留，实际 %q", after.TargetGroup)
+	}
+	if after.FailGroup != "err" {
+		t.Fatalf("fail_group 应保留，实际 %q", after.FailGroup)
+	}
+	if after.Concurrency != 10 {
+		t.Fatalf("concurrency 应保留，实际 %d", after.Concurrency)
+	}
+
+	// 再 toggle 回启用
+	body2, _ := json.Marshal(map[string]any{"enabled": true})
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, httptest.NewRequest("PATCH", fmt.Sprintf("/api/deploy-rules/%d", id), bytes.NewReader(body2)))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("恢复 PATCH 应 200，实际 %d: %s", rec2.Code, rec2.Body.String())
+	}
+	final, _ := GetDeployRuleByID(db, id)
+	if !final.Enabled {
+		t.Fatal("应已启用")
+	}
+	if final.Name != "完整规则" {
+		t.Fatalf("toggle 往返后 name 仍应保留，实际 %q", final.Name)
+	}
+}
+
+// newmux 创建一个干净的 gorilla/mux router（供单测使用）
+func newmux() *mux.Router { return mux.NewRouter() }
