@@ -813,6 +813,9 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	r.HandleFunc("/api/deploy-rules", requireAdmin(db, deployRulesCreateHandler(db))).Methods("POST")
 	r.HandleFunc("/api/deploy-rules/{id}", requireAdmin(db, deployRulesUpdateHandler(db))).Methods("PATCH")
 	r.HandleFunc("/api/deploy-rules/{id}", requireAdmin(db, deployRulesDeleteHandler(db))).Methods("DELETE")
+	// 自动部署全局暂停开关：GET 公开（看状态），POST 仅管理员（切状态）
+	r.HandleFunc("/api/deploy-paused", deployPausedHandler(db)).Methods("GET")
+	r.HandleFunc("/api/deploy-paused", requireAdmin(db, deployPausedHandler(db))).Methods("POST")
 	// 分组级管理：列表（只读）访客可看；新建/重命名/删除仅管理员
 	r.HandleFunc("/api/groups", requireAdmin(db, createGroupHandler(db, hub))).Methods("POST")
 	r.HandleFunc("/api/groups", requireLogin(db, listGroupsHandler(db))).Methods("GET")

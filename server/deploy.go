@@ -266,7 +266,17 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	log.Printf("[deploy] 调度器已启动（每 10s 扫描一次启用规则）")
+	pausedLogged := false
 	for range ticker.C {
+		// 全局暂停：规则全部保留，仅暂停调度；用于「停止自动部署」而不丢失配置
+		if GetKV(db, "deploy_paused", "0") == "1" {
+			if !pausedLogged {
+				log.Printf("[deploy] 自动部署已暂停（规则全部保留），可在「⚙ 自动部署」中恢复")
+				pausedLogged = true
+			}
+			continue
+		}
+		pausedLogged = false
 		rules, err := ListDeployRules(db)
 		if err != nil {
 			log.Printf("[deploy] 读取规则失败: %v", err)
@@ -514,5 +524,34 @@ func deployRulesDeleteHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
+	}
+}
+
+// deployPausedHandler 全局「自动部署暂停」开关的读写。
+// GET 公开（访客也能看到面板上的暂停状态）；POST（切换）仅管理员。
+// 暂停后所有规则配置保留、仅调度暂停，用于「停止自动部署」而不丢失规则。
+func deployPausedHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var req struct {
+				Paused bool `json:"paused"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			val := "0"
+			if req.Paused {
+				val = "1"
+			}
+			if err := SetKV(db, "deploy_paused", val); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true, "paused": req.Paused})
+			return
+		}
+		// GET：返回当前暂停状态
+		writeJSON(w, map[string]any{"paused": GetKV(db, "deploy_paused", "0") == "1"})
 	}
 }

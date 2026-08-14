@@ -1729,6 +1729,41 @@ async function openDeployRules() {
   const m = openCenterModal('自动部署规则');
   m.ok.style.display = 'none';
 
+  // 全局暂停/恢复总开关：暂停后所有规则配置保留，仅调度暂停（停止而不丢配置）
+  const pauseBar = document.createElement('div');
+  pauseBar.className = 'deploy-pause';
+  const pauseLabel = document.createElement('span');
+  pauseLabel.className = 'deploy-pause-label';
+  pauseLabel.textContent = '全局自动部署';
+  const pauseBtn = document.createElement('button');
+  pauseBtn.className = 'gp-btn';
+  pauseBar.appendChild(pauseLabel);
+  pauseBar.appendChild(pauseBtn);
+  m.box.insertBefore(pauseBar, m.box.querySelector('.gp-actions'));
+
+  let curPaused = false;
+  async function syncPause() {
+    try {
+      const r = await fetch('/api/deploy-paused');
+      if (!r.ok) return;
+      const d = await r.json();
+      curPaused = !!d.paused;
+      pauseBtn.textContent = curPaused ? '▶ 恢复自动部署' : '⏸ 暂停自动部署';
+      pauseBtn.classList.toggle('ok', curPaused);
+      pauseBtn.classList.toggle('danger', !curPaused);
+      pauseBar.classList.toggle('is-paused', curPaused);
+    } catch (e) {}
+  }
+  pauseBtn.onclick = async () => {
+    await fetch('/api/deploy-paused', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paused: !curPaused }),
+    });
+    await syncPause();
+  };
+  await syncPause();
+
   const listWrap = document.createElement('div');
   listWrap.className = 'deploy-list';
   m.box.insertBefore(listWrap, m.box.querySelector('.gp-actions'));

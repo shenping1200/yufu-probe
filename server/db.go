@@ -128,6 +128,10 @@ func InitDB(path string) (*sql.DB, error) {
 			ssh_password_enc TEXT DEFAULT '',
 			created_at INTEGER DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS kv (
+			k TEXT PRIMARY KEY,
+			v TEXT DEFAULT ''
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err = db.Exec(s); err != nil {
@@ -184,6 +188,23 @@ func AddTraffic(db *sql.DB, uuid, yearMonth string, rxDelta, txDelta float64) er
 			tx_total = tx_total + excluded.tx_total,
 			updated_at = excluded.updated_at`,
 		uuid, yearMonth, rxDelta, txDelta, now)
+	return err
+}
+
+// GetKV 读取全局键值（用于持久化「自动部署是否暂停」等开关状态），缺省返回 def
+func GetKV(db *sql.DB, key, def string) string {
+	var v sql.NullString
+	err := db.QueryRow(`SELECT v FROM kv WHERE k=?`, key).Scan(&v)
+	if err != nil || !v.Valid {
+		return def
+	}
+	return v.String
+}
+
+// SetKV 写入全局键值
+func SetKV(db *sql.DB, key, val string) error {
+	_, err := db.Exec(`INSERT INTO kv (k, v) VALUES (?, ?)
+		ON CONFLICT(k) DO UPDATE SET v=excluded.v`, key, val)
 	return err
 }
 

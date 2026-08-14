@@ -677,3 +677,9 @@ button.danger:hover { background: var(--danger); color: #fff; }
 .dr-src { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 6px 0; }
 .dr-src-item { display: inline-flex; align-items: center; gap: 4px; flex-direction: row; font-size: 13px; color: var(--text); }
 .dr-enable { flex-direction: row !important; align-items: center; gap: 6px; color: var(--text) !important; }
+
+/* 全局暂停/恢复总开关 */
+.deploy-pause { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); margin: 4px 0; }
+.deploy-pause-label { font-size: 14px; font-weight: 600; }
+.deploy-pause.is-paused { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.5); }
+.deploy-pause.is-paused .deploy-pause-label::after { content: '（已暂停 · 规则已保留）'; font-size: 12px; font-weight: 400; color: #f59e0b; margin-left: 8px; }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -178,5 +180,54 @@ func TestEffectiveSSHPassword(t *testing.T) {
 	// 两者皆空时返回空（调度器会跳过所有规则）
 	if got := effectiveSSHPassword(&Config{}); got != "" {
 		t.Fatalf("应返回空，实际 %q", got)
+	}
+}
+
+func TestDeployPaused(t *testing.T) {
+	db := testDB(t)
+	h := deployPausedHandler(db)
+
+	// GET 默认未暂停
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/api/deploy-paused", nil))
+	var g struct{ Paused bool }
+	if err := json.Unmarshal(rec.Body.Bytes(), &g); err != nil {
+		t.Fatal(err)
+	}
+	if g.Paused {
+		t.Fatal("默认应为未暂停")
+	}
+
+	// POST 暂停
+	body, _ := json.Marshal(map[string]bool{"paused": true})
+	rec2 := httptest.NewRecorder()
+	h(rec2, httptest.NewRequest("POST", "/api/deploy-paused", bytes.NewReader(body)))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("POST 应 200，实际 %d", rec2.Code)
+	}
+
+	// GET 应已暂停，且 kv 持久化
+	rec3 := httptest.NewRecorder()
+	h(rec3, httptest.NewRequest("GET", "/api/deploy-paused", nil))
+	var g2 struct{ Paused bool }
+	if err := json.Unmarshal(rec3.Body.Bytes(), &g2); err != nil {
+		t.Fatal(err)
+	}
+	if !g2.Paused {
+		t.Fatal("POST 暂停后 GET 应返回 paused=true")
+	}
+	if GetKV(db, "deploy_paused", "0") != "1" {
+		t.Fatal("deploy_paused 应持久化为 1")
+	}
+
+	// POST 恢复
+	body2, _ := json.Marshal(map[string]bool{"paused": false})
+	rec4 := httptest.NewRecorder()
+	h(rec4, httptest.NewRequest("POST", "/api/deploy-paused", bytes.NewReader(body2)))
+	if rec4.Code != http.StatusOK {
+		t.Fatalf("恢复 POST 应 200，实际 %d", rec4.Code)
+	}
+	if GetKV(db, "deploy_paused", "0") != "0" {
+		t.Fatal("恢复后 deploy_paused 应回到 0")
 	}
 }
