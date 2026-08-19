@@ -235,7 +235,11 @@ func resetDeployState(db *sql.DB, uuid string) error {
 	return err
 }
 
-// pendingDeployUUIDs 返回「处于源分组、尚未部署完成、且在线」的机器 uuid 列表
+// pendingDeployUUIDs 返回「处于源分组、且在线」的待部署机器 uuid 列表。
+// 仅排除 deploy_state='done'（已成功部署，不应重复部署）；
+// 不再排除 'failed' —— 这样当某条规则的源分组显式指向失败组（或机器被标 failed 后仍在源组内）时，
+// 调度器会把它当作候选重新尝试部署，支持「重试失败机器」。
+// （failed 机器若再次失败会被移入失败组并重新标 failed；只要失败组≠源组就不会无限重试。）
 func pendingDeployUUIDs(db *sql.DB, sources []string) ([]string, error) {
 	if len(sources) == 0 {
 		return nil, nil
@@ -246,7 +250,7 @@ func pendingDeployUUIDs(db *sql.DB, sources []string) ([]string, error) {
 	for i, s := range sources {
 		args[i] = s
 	}
-	rows, err := db.Query(`SELECT uuid FROM agents WHERE group_name IN (`+ph+`) AND (deploy_state IS NULL OR deploy_state NOT IN ('done','failed')) AND online=1`, args...)
+	rows, err := db.Query(`SELECT uuid FROM agents WHERE group_name IN (`+ph+`) AND (deploy_state IS NULL OR deploy_state != 'done') AND online=1`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -326,6 +330,7 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	defer ticker.Stop()
 	log.Printf("[deploy] 调度器已启动（每 10s 扫描一次启用规则）")
 	pausedLogged := false
+	var hbTick int
 	isPaused := func() bool { return GetKV(db, "deploy_paused", "0") == "1" }
 	for range ticker.C {
 		// 全局暂停：规则全部保留，仅暂停调度；用于「停止自动部署」而不丢失配置
@@ -343,6 +348,7 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 			continue
 		}
 		var changed int32
+		enabledRules, totalCands := 0, 0
 		for i := range rules {
 			// 细粒度复检：本轮扫描进行中若被暂停，立即停止派发后续规则
 			if isPaused() {
@@ -353,6 +359,7 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 			if !rule.Enabled {
 				continue
 			}
+			enabledRules++
 			pw, err := decryptPassword(rule.pwEnc)
 			if err != nil {
 				log.Printf("[deploy] 规则 %d(%s) 解密密码失败: %v（请检查 %s）", rule.ID, rule.Name, err, deployKeyEnv)
@@ -367,6 +374,7 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 				log.Printf("[deploy] 规则 %d 查询候选失败: %v", rule.ID, err)
 				continue
 			}
+			totalCands += len(cands)
 			if len(cands) == 0 {
 				continue
 			}
@@ -497,6 +505,15 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 				}(uuid)
 			}
 			wg.Wait()
+		}
+		// 心跳：未暂停时周期性打印，证明调度器存活（之前空闲时完全静默，导致“点了部署却无任何日志”难以判断）。
+		hbTick++
+		if hbTick%6 == 0 {
+			if totalCands == 0 {
+				log.Printf("[deploy] 心跳: 调度器存活，当前无可部署候选（启用规则=%d，均已完成或无在线机器）", enabledRules)
+			} else {
+				log.Printf("[deploy] 心跳: 调度器存活，待部署候选=%d 台（启用规则=%d）", totalCands, enabledRules)
+			}
 		}
 		if atomic.LoadInt32(&changed) == 1 {
 			broadcastAgents(hub)

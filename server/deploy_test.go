@@ -116,10 +116,10 @@ func TestPendingDeployUUIDs(t *testing.T) {
 		}
 	}
 	insert("a1", "", 1, "pending")   // 未分组+在线+pending → 选中
-	insert("a2", "", 1, "done")      // 未分组+在线+done → 排除
+	insert("a2", "", 1, "done")      // 未分组+在线+done → 排除（已成功，不重跑）
 	insert("a3", "", 0, "pending")   // 未分组+离线 → 排除
 	insert("a4", "g1", 1, "pending") // g1+在线+pending → 选中
-	insert("a5", "g1", 1, "failed")  // g1+失败 → 排除
+	insert("a5", "g1", 1, "failed")  // g1+失败 → 选中（支持重试失败机器）
 	insert("a6", "g2", 1, "pending") // g2（非源分组）→ 排除
 
 	got, err := pendingDeployUUIDs(db, []string{"", "g1"})
@@ -130,11 +130,11 @@ func TestPendingDeployUUIDs(t *testing.T) {
 	for _, u := range got {
 		m[u] = true
 	}
-	if !m["a1"] || !m["a4"] {
-		t.Fatalf("应含 a1,a4，实际 %v", got)
+	if !m["a1"] || !m["a4"] || !m["a5"] {
+		t.Fatalf("应含 a1,a4,a5，实际 %v", got)
 	}
-	if m["a2"] || m["a3"] || m["a5"] || m["a6"] {
-		t.Fatalf("不应含 a2/a3/a5/a6，实际 %v", got)
+	if m["a2"] || m["a3"] || m["a6"] {
+		t.Fatalf("不应含 a2/a3/a6，实际 %v", got)
 	}
 }
 
