@@ -275,11 +275,43 @@ func effectiveSSHPassword(cfg *Config) string {
 	return ""
 }
 
+// ---------- 自动部署「暂停」的即时中断信号 ----------
+// deployAbortCh 在「暂停自动部署」被打开展开时被关闭一次，所有正在监听它的在途部署 goroutine
+// 会立刻收到信号并中止 runExec，从而让「暂停」即时生效，而不是等整批在途机器全部跑完。
+// 关闭后立刻新建一个通道，供恢复部署后的新一轮执行监听。
+var (
+	deployAbortMu sync.Mutex
+	deployAbortCh = make(chan struct{})
+)
+
+// signalDeployAbort 关闭当前中止通道并新建一个，唤醒所有监听中的在途部署（暂停瞬间中断）。
+func signalDeployAbort() {
+	deployAbortMu.Lock()
+	close(deployAbortCh)
+	deployAbortCh = make(chan struct{})
+	deployAbortMu.Unlock()
+}
+
+// deployAborted 返回当前的中止通道；在途部署 goroutine 监听它，暂停被打开时即可退出。
+func deployAborted() <-chan struct{} {
+	deployAbortMu.Lock()
+	ch := deployAbortCh
+	deployAbortMu.Unlock()
+	return ch
+}
+
 // runDeployScheduler 自动部署调度器：每 10s 扫描启用规则，对源分组内「待部署且在线」的机器
 // 并发下发部署命令；成功(exit 0)→移到目标分组并标记 done；失败/超时→移到失败分组并标记 failed。
 // 用内存 in-flight 集防止同一台被重复捞取；进程重启后 pending 机器会重新部署（命令应幂等）。
 // 规则里保存的 Web SSH 密码必须与服务端配置一致（effectiveSSHPassword）才允许执行，
 // 否则视为配置错误，跳过该规则并记录日志（与浏览器终端手动输密码鉴权同口径）。
+//
+// 暂停语义（修复「点了暂停还在跑」的 bug）：
+//   - 每轮 tick 顶部仍检查 deploy_paused，命中则跳过整轮扫描（规则保留、仅调度暂停）；
+//   - 此外，派发循环内会细粒度复检暂停，命中立即停止向新机器派发；
+//   - 一旦「暂停」被打开展开，signalDeployAbort 关闭 deployAbortCh，所有正在跑的 runExec 立即中止，
+//     因此在途部署也会尽快停下，无需重启服务/机器干等整批跑完。
+//   - 被暂停中止的机器不标记 failed（保持 pending/原位），恢复后下一轮扫描会自动重试。
 func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	inFlight := make(map[string]struct{})
 	var mu sync.Mutex
@@ -294,9 +326,10 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	defer ticker.Stop()
 	log.Printf("[deploy] 调度器已启动（每 10s 扫描一次启用规则）")
 	pausedLogged := false
+	isPaused := func() bool { return GetKV(db, "deploy_paused", "0") == "1" }
 	for range ticker.C {
 		// 全局暂停：规则全部保留，仅暂停调度；用于「停止自动部署」而不丢失配置
-		if GetKV(db, "deploy_paused", "0") == "1" {
+		if isPaused() {
 			if !pausedLogged {
 				log.Printf("[deploy] 自动部署已暂停（规则全部保留），可在「⚙ 自动部署」中恢复")
 				pausedLogged = true
@@ -311,6 +344,11 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 		}
 		var changed int32
 		for i := range rules {
+			// 细粒度复检：本轮扫描进行中若被暂停，立即停止派发后续规则
+			if isPaused() {
+				log.Printf("[deploy] 自动部署已暂停，停止派发后续规则/机器")
+				break
+			}
 			rule := rules[i]
 			if !rule.Enabled {
 				continue
@@ -343,6 +381,10 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 			sem := make(chan struct{}, cap)
 			var wg sync.WaitGroup
 			for _, uuid := range cands {
+				// 细粒度复检：派发前若被暂停，不再向新机器下发，等已在途的中止
+				if isPaused() {
+					break
+				}
 				mu.Lock()
 				if _, ok := inFlight[uuid]; ok {
 					mu.Unlock()
@@ -384,7 +426,7 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 								resCh <- ExecResult{UUID: u, Status: "error", Error: "内部错误"}
 							}
 						}()
-						resCh <- runExec(agent, u, rule.Command, execTimeout)
+						resCh <- runExec(agent, u, rule.Command, execTimeout, deployAborted())
 					}()
 					var res ExecResult
 					select {
@@ -393,9 +435,15 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 						res = ExecResult{UUID: u, Status: "timeout", Error: "部署执行超出硬超时"}
 						log.Printf("[deploy] 规则 %d 机器 %s 执行超出硬超时（放弃本机，下轮重试）", rule.ID, u)
 					}
-					log.Printf("[deploy] 规则 %d 机器 %s 执行结果: status=%s exit=%d", rule.ID, u, res.Status, res.ExitCode)
+				log.Printf("[deploy] 规则 %d 机器 %s 执行结果: status=%s exit=%d", rule.ID, u, res.Status, res.ExitCode)
 
-					success := res.Status == "ok" && res.ExitCode == 0
+				// 被暂停中止：不移动分组、不标记 failed，保持 pending/原位，恢复后下轮自动重试
+				if res.Status == "aborted" {
+					log.Printf("[deploy] 规则 %d 机器 %s 因自动部署已暂停被中止，跳过状态变更（恢复后下轮重试）", rule.ID, u)
+					return
+				}
+
+				success := res.Status == "ok" && res.ExitCode == 0
 
 					// 状态更新同样置于硬超时保护下：DB 写入或 live 变更若意外挂起，
 					// 最多 20s 后放弃，保证 wg.Done 必然执行、循环不会冻结。
@@ -600,6 +648,11 @@ func deployPausedHandler(db *sql.DB) http.HandlerFunc {
 			if err := SetKV(db, "deploy_paused", val); err != nil {
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
+			}
+			// 暂停被打开展开后，立刻中断所有在途部署 goroutine，使「暂停」即时生效
+			if req.Paused {
+				signalDeployAbort()
+				log.Printf("[deploy] 自动部署已暂停，已通知在途部署立即中止")
 			}
 			writeJSON(w, map[string]any{"ok": true, "paused": req.Paused})
 			return

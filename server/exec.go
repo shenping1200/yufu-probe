@@ -271,7 +271,7 @@ func writeB64Heredoc(b *strings.Builder, path, content, eof string) {
 // agentUUID 用于登记会话（掉线中止、排查用）；command 为用户输入的多行脚本；
 // timeout 为整体超时（含开 shell + 注入 + 等输出）。
 // dataCb 仅测试用（观察每片数据），生产不传。
-func runExec(agent *Client, agentUUID, command string, timeout time.Duration, dataCb ...func(data string)) ExecResult {
+func runExec(agent *Client, agentUUID, command string, timeout time.Duration, abortCh <-chan struct{}, dataCb ...func(data string)) ExecResult {
 	tag := strings.ReplaceAll(uuid.New().String(), "-", "")
 	ses := &execSession{
 		sid:   uuid.New().String(),
@@ -329,6 +329,12 @@ func runExec(agent *Client, agentUUID, command string, timeout time.Duration, da
 	// 3) 等结束标记 / 中止 / 超时。数据由 agentWSHandler → feedExecData 灌入，这里只等。
 	select {
 	case <-ses.done:
+	case <-abortCh:
+		// 外部中止（如自动部署被暂停）：立即关闭 shell 并退出，不再等待命令自然结束。
+		// abortCh 为 nil 时该分支恒阻塞、永不选中（Go select 对 nil channel 的语义）。
+		closeShell()
+		return ExecResult{UUID: ses.uuid, Status: "aborted", Error: "执行被外部中止（如自动部署已暂停）",
+			Stdout: cleanExecOutput(extractOutput(ses.snapshot(), ses.tok))}
 	case <-time.After(timeout):
 		closeShell()
 		return ExecResult{UUID: ses.uuid, Status: "timeout", Error: "执行超时（已收集部分输出）",
@@ -513,7 +519,7 @@ func execHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 					results[i] = ExecResult{UUID: u, Status: "offline", Error: "客户端不在线"}
 					return
 				}
-				results[i] = runExec(agent, u, req.Command, time.Duration(req.Timeout)*time.Second)
+				results[i] = runExec(agent, u, req.Command, time.Duration(req.Timeout)*time.Second, nil)
 				results[i].UUID = u
 			}(i, u)
 		}

@@ -175,7 +175,7 @@ func TestRunExecCapturesOutput(t *testing.T) {
 	agent := dialMock(t, srv.URL)
 	startExecRouter(agent)
 
-	res := runExec(agent, "test-uuid", "id\nhostname\n", 5*time.Second)
+	res := runExec(agent, "test-uuid", "id\nhostname\n", 5*time.Second, nil)
 	if res.Status != "ok" {
 		t.Fatalf("期望 status=ok，实际 %s (err=%s stdout=%q)", res.Status, res.Error, res.Stdout)
 	}
@@ -193,6 +193,44 @@ func TestRunExecCapturesOutput(t *testing.T) {
 	}
 }
 
+// TestRunExecAbort 验证：正在执行的 runExec 在 abortCh 关闭时应立即中止并返回 status=aborted，
+// 而不是傻等到整体超时。这对应「点击暂停自动部署后，在途部署应立刻停下」的修复。
+func TestRunExecAbort(t *testing.T) {
+	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	// 只收不发的静默 agent：模拟一个「命令迟迟不返回」的卡死目标，
+	// 否则 runExec 只能等满 timeout 才返回，无法验证即时中止。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	agent := dialMock(t, srv.URL)
+	startExecRouter(agent)
+
+	abortCh := make(chan struct{})
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		close(abortCh)
+	}()
+	start := time.Now()
+	res := runExec(agent, "abort-uuid", "sleep 999\n", 30*time.Second, abortCh)
+	elapsed := time.Since(start)
+	if res.Status != "aborted" {
+		t.Fatalf("期望 status=aborted，实际 %s (err=%s)", res.Status, res.Error)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("中止未在 5s 内生效，实际耗时 %s（暂停不即时，仍会傻等）", elapsed)
+	}
+}
+
 // TestRunExecNonZeroExit 验证非 0 退出码能被正确解析（用户要靠它判断部署是否成功）。
 func TestRunExecNonZeroExit(t *testing.T) {
 	srv := startMockAgent(t, "bash: line 1: foo: command not found", 127)
@@ -200,7 +238,7 @@ func TestRunExecNonZeroExit(t *testing.T) {
 	agent := dialMock(t, srv.URL)
 	startExecRouter(agent)
 
-	res := runExec(agent, "test-uuid", "foo\n", 5*time.Second)
+	res := runExec(agent, "test-uuid", "foo\n", 5*time.Second, nil)
 	if res.Status != "ok" {
 		t.Fatalf("期望 status=ok（命令跑完了，只是退出码非 0），实际 %s", res.Status)
 	}
@@ -232,7 +270,7 @@ func TestRunExecTimeout(t *testing.T) {
 	startExecRouter(agent)
 
 	got := make(chan ExecResult, 1)
-	go func() { got <- runExec(agent, "test-uuid", "sleep 999\n", 1*time.Second) }()
+	go func() { got <- runExec(agent, "test-uuid", "sleep 999\n", 1*time.Second, nil) }()
 	select {
 	case res := <-got:
 		if res.Status != "timeout" {
@@ -518,7 +556,7 @@ func TestAbortExecForAgent(t *testing.T) {
 
 	got := make(chan ExecResult, 1)
 	// 超时给 60s：如果中止没生效，用例会在下面的 3s 断言里失败
-	go func() { got <- runExec(agent, "gone-uuid", "sleep 999\n", 60*time.Second) }()
+	go func() { got <- runExec(agent, "gone-uuid", "sleep 999\n", 60*time.Second, nil) }()
 
 	// 等会话登记完成再模拟掉线
 	deadline := time.Now().Add(2 * time.Second)
