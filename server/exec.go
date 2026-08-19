@@ -271,7 +271,9 @@ func writeB64Heredoc(b *strings.Builder, path, content, eof string) {
 // agentUUID 用于登记会话（掉线中止、排查用）；command 为用户输入的多行脚本；
 // timeout 为整体超时（含开 shell + 注入 + 等输出）。
 // dataCb 仅测试用（观察每片数据），生产不传。
-func runExec(agent *Client, agentUUID, command string, timeout time.Duration, abortCh <-chan struct{}, dataCb ...func(data string)) ExecResult {
+// 注：自动部署采用「优雅收尾」语义——暂停时不向 runExec 注入外部中止信号，
+// 在途命令会自然跑完（成功/超时由该 select 内部判定），不会在中途被掐断。
+func runExec(agent *Client, agentUUID, command string, timeout time.Duration, dataCb ...func(data string)) ExecResult {
 	tag := strings.ReplaceAll(uuid.New().String(), "-", "")
 	ses := &execSession{
 		sid:   uuid.New().String(),
@@ -326,15 +328,11 @@ func runExec(agent *Client, agentUUID, command string, timeout time.Duration, ab
 	// 注入完成：解除写超时，接下来的「等结束标记」阶段只收数据、不再写。
 	agent.conn.SetWriteDeadline(time.Time{})
 
-	// 3) 等结束标记 / 中止 / 超时。数据由 agentWSHandler → feedExecData 灌入，这里只等。
+	// 3) 等结束标记 / 超时。数据由 agentWSHandler → feedExecData 灌入，这里只等。
+	// 不在中途插入外部中止分支：自动部署「停止」时靠调度层优雅收尾（不再下发新机器、
+	// 已下发的在途命令自然跑完），runExec 本身只认正常完成与超时两种结局。
 	select {
 	case <-ses.done:
-	case <-abortCh:
-		// 外部中止（如自动部署被暂停）：立即关闭 shell 并退出，不再等待命令自然结束。
-		// abortCh 为 nil 时该分支恒阻塞、永不选中（Go select 对 nil channel 的语义）。
-		closeShell()
-		return ExecResult{UUID: ses.uuid, Status: "aborted", Error: "执行被外部中止（如自动部署已暂停）",
-			Stdout: cleanExecOutput(extractOutput(ses.snapshot(), ses.tok))}
 	case <-time.After(timeout):
 		closeShell()
 		return ExecResult{UUID: ses.uuid, Status: "timeout", Error: "执行超时（已收集部分输出）",
@@ -519,7 +517,7 @@ func execHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 					results[i] = ExecResult{UUID: u, Status: "offline", Error: "客户端不在线"}
 					return
 				}
-				results[i] = runExec(agent, u, req.Command, time.Duration(req.Timeout)*time.Second, nil)
+				results[i] = runExec(agent, u, req.Command, time.Duration(req.Timeout)*time.Second)
 				results[i].UUID = u
 			}(i, u)
 		}

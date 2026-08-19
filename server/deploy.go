@@ -279,30 +279,11 @@ func effectiveSSHPassword(cfg *Config) string {
 	return ""
 }
 
-// ---------- 自动部署「暂停」的即时中断信号 ----------
-// deployAbortCh 在「暂停自动部署」被打开展开时被关闭一次，所有正在监听它的在途部署 goroutine
-// 会立刻收到信号并中止 runExec，从而让「暂停」即时生效，而不是等整批在途机器全部跑完。
-// 关闭后立刻新建一个通道，供恢复部署后的新一轮执行监听。
-var (
-	deployAbortMu sync.Mutex
-	deployAbortCh = make(chan struct{})
-)
-
-// signalDeployAbort 关闭当前中止通道并新建一个，唤醒所有监听中的在途部署（暂停瞬间中断）。
-func signalDeployAbort() {
-	deployAbortMu.Lock()
-	close(deployAbortCh)
-	deployAbortCh = make(chan struct{})
-	deployAbortMu.Unlock()
-}
-
-// deployAborted 返回当前的中止通道；在途部署 goroutine 监听它，暂停被打开时即可退出。
-func deployAborted() <-chan struct{} {
-	deployAbortMu.Lock()
-	ch := deployAbortCh
-	deployAbortMu.Unlock()
-	return ch
-}
+// ---------- 自动部署「暂停」= 优雅收尾（不硬中断在途机器）----------
+// 历史实现里暂停会关闭一个 abort 通道、立刻掐断所有在途 runExec；但用户更期望
+// 「停止自动部署」时让正在跑的机器自然完成、不再开新机器即可。因此这里不保留
+// 外部中止通道——调度层只靠 deploy_paused 标记控制「是否继续派发新机器」，
+// 已经调用 runExec 的机器不受干扰，会一直跑到成功/超时自然结束。
 
 // runDeployScheduler 自动部署调度器：每 10s 扫描启用规则，对源分组内「待部署且在线」的机器
 // 并发下发部署命令；成功(exit 0)→移到目标分组并标记 done；失败/超时→移到失败分组并标记 failed。
@@ -310,12 +291,12 @@ func deployAborted() <-chan struct{} {
 // 规则里保存的 Web SSH 密码必须与服务端配置一致（effectiveSSHPassword）才允许执行，
 // 否则视为配置错误，跳过该规则并记录日志（与浏览器终端手动输密码鉴权同口径）。
 //
-// 暂停语义（修复「点了暂停还在跑」的 bug）：
-//   - 每轮 tick 顶部仍检查 deploy_paused，命中则跳过整轮扫描（规则保留、仅调度暂停）；
-//   - 此外，派发循环内会细粒度复检暂停，命中立即停止向新机器派发；
-//   - 一旦「暂停」被打开展开，signalDeployAbort 关闭 deployAbortCh，所有正在跑的 runExec 立即中止，
-//     因此在途部署也会尽快停下，无需重启服务/机器干等整批跑完。
-//   - 被暂停中止的机器不标记 failed（保持 pending/原位），恢复后下一轮扫描会自动重试。
+// 暂停语义（优雅收尾，不硬中断在途机器）：
+//   - 每轮 tick 顶部检查 deploy_paused，命中则跳过整轮扫描（规则保留、仅调度暂停）；
+//   - 派发循环内细粒度复检暂停，命中立即停止向「新」机器派发（排队等信号量的也不会启动）；
+//   - 已经调用 runExec、正在执行命令的机器不被打断，让它自然跑完（成功→目标组+done，失败→失败组+failed）；
+//   - 等当前这一批在途机器全部收尾落库后，下一轮 tick 读到暂停标记直接跳过，彻底停。
+//   - 因此「停止自动部署」是优雅的：只让还在跑的完成，不再开新机器，不留下半截 pending。
 func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	inFlight := make(map[string]struct{})
 	var mu sync.Mutex
@@ -350,7 +331,7 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 		var changed int32
 		enabledRules, totalCands := 0, 0
 		for i := range rules {
-			// 细粒度复检：本轮扫描进行中若被暂停，立即停止派发后续规则
+			// 细粒度复检：本轮扫描进行中若被暂停，停止派发后续规则（已下发的在途机器让它跑完）
 			if isPaused() {
 				log.Printf("[deploy] 自动部署已暂停，停止派发后续规则/机器")
 				break
@@ -389,10 +370,10 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 			sem := make(chan struct{}, cap)
 			var wg sync.WaitGroup
 			for _, uuid := range cands {
-				// 细粒度复检：派发前若被暂停，不再向新机器下发，等已在途的中止
-				if isPaused() {
-					break
-				}
+			// 细粒度复检：派发前若被暂停，不再向新机器下发（已下发在途的让它跑完）
+			if isPaused() {
+				break
+			}
 				mu.Lock()
 				if _, ok := inFlight[uuid]; ok {
 					mu.Unlock()
@@ -412,14 +393,13 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 						delete(inFlight, u)
 						mu.Unlock()
 					}()
-				sem <- struct{}{}
-				defer func() { <-sem }()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-				// 暂停复检（关键修复）：本机拿到信号量、准备真正下发前再判一次暂停。
-				// 否则会出现「在途的那批被 abort 后释放信号量，后续排队机器仍继续部署」的漏洞——
-				// 因为排队机器是卡在 sem<- 上、尚未调用 runExec 的，它们拿到的是 signalDeployAbort
-				// 新建的、未被关闭的通道，会一直跑完。这里复检可让暂停即时拦停所有排队机器。
-				if isPaused() {
+			// 暂停复检：本机拿到信号量、准备真正下发前再判一次暂停。
+			// 优雅收尾下，在途机器跑完后释放信号量，排队机器拿到槽位时若已暂停就跳过，
+			// 不新开部署；等当前这一批在途机器全部收尾后，下一轮 tick 直接整体跳过。
+			if isPaused() {
 					log.Printf("[deploy] 规则 %d 机器 %s 因自动部署已暂停，跳过下发（恢复后下轮重试）", rule.ID, u)
 					return
 				}
@@ -443,24 +423,22 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 								resCh <- ExecResult{UUID: u, Status: "error", Error: "内部错误"}
 							}
 						}()
-						resCh <- runExec(agent, u, rule.Command, execTimeout, deployAborted())
-					}()
-					var res ExecResult
-					select {
-					case res = <-resCh:
-					case <-time.After(execTimeout + 10*time.Second):
-						res = ExecResult{UUID: u, Status: "timeout", Error: "部署执行超出硬超时"}
-						log.Printf("[deploy] 规则 %d 机器 %s 执行超出硬超时（放弃本机，下轮重试）", rule.ID, u)
-					}
-				log.Printf("[deploy] 规则 %d 机器 %s 执行结果: status=%s exit=%d", rule.ID, u, res.Status, res.ExitCode)
-
-				// 被暂停中止：不移动分组、不标记 failed，保持 pending/原位，恢复后下轮自动重试
-				if res.Status == "aborted" {
-					log.Printf("[deploy] 规则 %d 机器 %s 因自动部署已暂停被中止，跳过状态变更（恢复后下轮重试）", rule.ID, u)
-					return
+					resCh <- runExec(agent, u, rule.Command, execTimeout)
+				}()
+				var res ExecResult
+				select {
+				case res = <-resCh:
+				case <-time.After(execTimeout + 10*time.Second):
+					res = ExecResult{UUID: u, Status: "timeout", Error: "部署执行超出硬超时"}
+					log.Printf("[deploy] 规则 %d 机器 %s 执行超出硬超时（放弃本机，下轮重试）", rule.ID, u)
 				}
+			log.Printf("[deploy] 规则 %d 机器 %s 执行结果: status=%s exit=%d", rule.ID, u, res.Status, res.ExitCode)
 
-				success := res.Status == "ok" && res.ExitCode == 0
+			// 注：自动部署「停止」采用优雅收尾，不会向 runExec 注入中止信号，
+			// 因此这里不会再收到 aborted 状态；在途机器一定以 ok/error/timeout 自然收尾，
+			// 并按成功/失败正常落库（done/failed）。无需为「被中止」做特殊跳过。
+
+			success := res.Status == "ok" && res.ExitCode == 0
 
 					// 状态更新同样置于硬超时保护下：DB 写入或 live 变更若意外挂起，
 					// 最多 20s 后放弃，保证 wg.Done 必然执行、循环不会冻结。
@@ -656,7 +634,9 @@ func deployRulesDeleteHandler(db *sql.DB) http.HandlerFunc {
 
 // deployPausedHandler 全局「自动部署暂停」开关的读写。
 // GET 公开（访客也能看到面板上的暂停状态）；POST（切换）仅管理员。
-// 暂停后所有规则配置保留、仅调度暂停，用于「停止自动部署」而不丢失规则。
+// 暂停为「优雅收尾」：置标记后，调度层停止派发新机器，但已下发的在途命令会自然跑完
+// （成功→目标组+done，失败→失败组+failed），不会在中途被掐断；下一轮 tick 整体跳过。
+// 所有规则配置保留，用于「停止自动部署」而不丢失规则。
 func deployPausedHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -675,10 +655,13 @@ func deployPausedHandler(db *sql.DB) http.HandlerFunc {
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
-			// 暂停被打开展开后，立刻中断所有在途部署 goroutine，使「暂停」即时生效
+			// 优雅停止：仅置标记，不向任何在途部署注入中止信号。
+			// 正在执行的机器会自然跑完，排队/未下发的机器不再启动；
+			// 等当前这一批在途机器全部收尾后，下一轮 tick 直接整体跳过，彻底停。
 			if req.Paused {
-				signalDeployAbort()
-				log.Printf("[deploy] 自动部署已暂停，已通知在途部署立即中止")
+				log.Printf("[deploy] 自动部署已暂停（优雅收尾：在途机器将执行完成后停止，未下发的不再启动）")
+			} else {
+				log.Printf("[deploy] 自动部署已恢复，下一轮扫描重新开始派发")
 			}
 			writeJSON(w, map[string]any{"ok": true, "paused": req.Paused})
 			return
