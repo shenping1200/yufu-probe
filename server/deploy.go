@@ -404,13 +404,22 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 						delete(inFlight, u)
 						mu.Unlock()
 					}()
-					sem <- struct{}{}
-					defer func() { <-sem }()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 
-					agent := hub.findAgent(u)
-					if agent == nil {
-						return // 离线，下一轮再试
-					}
+				// 暂停复检（关键修复）：本机拿到信号量、准备真正下发前再判一次暂停。
+				// 否则会出现「在途的那批被 abort 后释放信号量，后续排队机器仍继续部署」的漏洞——
+				// 因为排队机器是卡在 sem<- 上、尚未调用 runExec 的，它们拿到的是 signalDeployAbort
+				// 新建的、未被关闭的通道，会一直跑完。这里复检可让暂停即时拦停所有排队机器。
+				if isPaused() {
+					log.Printf("[deploy] 规则 %d 机器 %s 因自动部署已暂停，跳过下发（恢复后下轮重试）", rule.ID, u)
+					return
+				}
+
+				agent := hub.findAgent(u)
+				if agent == nil {
+					return // 离线，下一轮再试
+				}
 
 					// 用带硬超时的 goroutine 包裹 runExec：即便某次下发在底层（如 safeWrite）
 					// 卡死，外层 select 也能兜底返回，绝不让 ticker 循环冻结。
