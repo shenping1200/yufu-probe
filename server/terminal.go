@@ -148,9 +148,8 @@ func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if locked {
 				client.writeJSON(map[string]string{"action": "error", "message": fmt.Sprintf("错误次数过多，SSH 已锁定 24 小时（剩余 %d 秒）", until-now)})
 			} else {
-				left := 4 // 本次失败前已失败次数固定为 4 即触发锁定；这里给一个保守提示
 				fail, _, _ := GetSSHLock(db, targetUUID, ip)
-				left = 5 - fail
+				left := 5 - fail
 				if left < 0 {
 					left = 0
 				}
