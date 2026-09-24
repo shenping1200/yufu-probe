@@ -16,6 +16,9 @@ type Client struct {
 	// writeMu 保护对 conn 的并发写（同一 agent 连接可能被多个终端会话同时写入，
 	// 例如同一客户端同时开多个 Web SSH）。viewer/terminal 走 send 通道由 writePump 单协程写出，无需此锁。
 	writeMu sync.Mutex
+	// closeOnce 保证 send 通道只被关闭一次；viewer 断开时关闭它使 writePump 的 range 循环退出，
+	// 否则 goroutine 会永久阻塞在空通道上（#6 goroutine 泄漏）。
+	closeOnce sync.Once
 }
 
 // Hub 管理所有 viewer（浏览器）连接，负责向它们广播实时数据；
@@ -125,4 +128,13 @@ func (c *Client) writePump() {
 			return
 		}
 	}
+}
+
+// closeSend 幂等地关闭 send 通道。必须在 removeViewer 之后调用：
+// 此时本 viewer 已从 h.viewers 移除，BroadcastToViewers 不会再 select 到该通道，
+// 关闭不会触发「向已关通道发送」的 panic，writePump 随即退出（#6）。
+func (c *Client) closeSend() {
+	c.closeOnce.Do(func() {
+		close(c.send)
+	})
 }
