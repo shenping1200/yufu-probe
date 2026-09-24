@@ -23,8 +23,8 @@ type countryInfo struct {
 var countryList = []countryInfo{
 	{"US", "United States", "8.8.8.8"},
 	{"CN", "China", "223.5.5.5"},
-	{"HK", "Hong Kong", "203.80.0.1"},
-	{"TW", "Taiwan", "168.95.1.1"},
+	{"HK", "中国香港", "203.80.0.1"},
+	{"TW", "中国台湾", "168.95.1.1"},
 	{"JP", "Japan", "202.232.12.0"},
 	{"KR", "South Korea", "168.126.63.1"},
 	{"SG", "Singapore", "203.119.0.10"},
@@ -352,6 +352,7 @@ func pickCountry(r *mrand.Rand, codes []string) countryInfo {
 }
 
 func pickOS(r *mrand.Rand, keys []string) (string, string) {
+	// 优先从指定 keys 里随机挑一个系统
 	if len(keys) > 0 {
 		k := keys[r.Intn(len(keys))]
 		if vers, ok := osMap[k]; ok {
@@ -359,8 +360,14 @@ func pickOS(r *mrand.Rand, keys []string) (string, string) {
 			return v.os, v.platform
 		}
 	}
-	// 随机：从所有版本里挑
-	for _, vers := range osMap {
+	// 兜底：显式随机选一个系统 key（不依赖 map 遍历顺序），再随机选版本
+	if len(osMap) > 0 {
+		allKeys := make([]string, 0, len(osMap))
+		for k := range osMap {
+			allKeys = append(allKeys, k)
+		}
+		k := allKeys[r.Intn(len(allKeys))]
+		vers := osMap[k]
 		v := vers[r.Intn(len(vers))]
 		return v.os, v.platform
 	}
