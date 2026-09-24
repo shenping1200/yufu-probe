@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -33,6 +34,7 @@ func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// 配置文件不存在时使用默认值，保证可启动
+		log.Printf("[config] 未找到配置文件 %s，将使用内置默认值（含默认口令，存在安全风险，请尽快创建配置文件）", path)
 		return defaultConfig(), nil
 	}
 	var c Config

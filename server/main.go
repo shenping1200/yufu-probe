@@ -37,6 +37,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	// 安全自检：默认凭据告警（仅告警，不致命，避免误 brick 已有部署）
+	if cfg.Admin.Username == "admin" && cfg.Admin.Password == "admin" {
+		log.Printf("[SECURITY] 检测到默认管理员凭据 admin/admin，请立即在 configs/server.yaml 修改 admin.password！")
+	}
+	if cfg.AgentToken == "change-me-agent-token" {
+		log.Printf("[SECURITY] 检测到默认 agent_token change-me-agent-token，请立即修改，否则任何人可用它注册机器！")
+	}
 	db, err := InitDB(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("init db: %v", err)

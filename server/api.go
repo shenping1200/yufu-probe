@@ -2,14 +2,18 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -99,8 +103,83 @@ func broadcastAgents(hub *Hub) {
 	hub.BroadcastToViewers(payload)
 }
 
+// clientIP 提取请求来源 IP。部署在反代（Cloudflare Tunnel / nginx）之后时取
+// X-Forwarded-For 最左侧真实客户端；否则回退 RemoteAddr（去掉端口）。
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if ip := strings.TrimSpace(parts[0]); ip != "" {
+			return ip
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// ---------- 登录限流（按来源 IP） ----------
+// 连续 loginMaxFail 次失败锁定 loginLockSecs 秒，直接掐断对管理员口令的无限爆破。
+type loginLimitEntry struct {
+	fail        int
+	lockedUntil int64
+}
+
+var (
+	loginMu    sync.Mutex
+	loginFails = make(map[string]*loginLimitEntry)
+)
+
+const (
+	loginMaxFail  = 5
+	loginLockSecs = 15 * 60
+)
+
+func loginCheck(ip string) (locked bool, remain int64) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	e, ok := loginFails[ip]
+	if !ok {
+		return false, 0
+	}
+	now := time.Now().Unix()
+	if e.lockedUntil > now {
+		return true, e.lockedUntil - now
+	}
+	return false, 0
+}
+
+func loginRegisterFailure(ip string) (locked bool, remain int64) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	e := loginFails[ip]
+	if e == nil {
+		e = &loginLimitEntry{}
+		loginFails[ip] = e
+	}
+	now := time.Now().Unix()
+	e.fail++
+	if e.fail >= loginMaxFail {
+		e.lockedUntil = now + loginLockSecs
+		return true, loginLockSecs
+	}
+	return false, 0
+}
+
+func loginReset(ip string) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	delete(loginFails, ip)
+}
+
 func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
+		if locked, remain := loginCheck(ip); locked {
+			http.Error(w, fmt.Sprintf("尝试过于频繁，请 %d 秒后重试", remain), http.StatusTooManyRequests)
+			return
+		}
 		var req struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -109,10 +188,19 @@ func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		if req.Username != cfg.Admin.Username || req.Password != cfg.Admin.Password {
-			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(cfg.Admin.Username)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(cfg.Admin.Password)) == 1
+		if !userOK || !passOK {
+			locked, remain := loginRegisterFailure(ip)
+			if locked {
+				log.Printf("[audit] 登录失败过多，已锁定来源 %s %d 秒", ip, remain)
+				http.Error(w, fmt.Sprintf("错误次数过多，已锁定 %d 秒", remain), http.StatusTooManyRequests)
+			} else {
+				http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			}
 			return
 		}
+		loginReset(ip)
 		token, err := createSession(db, roleAdmin)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
