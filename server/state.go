@@ -428,12 +428,16 @@ func (s *ServerState) Flush(db *sql.DB, month string) {
 
 	for _, u := range uuids {
 		s.mu.RLock()
-		a := s.agents[u]
+		a, ok := s.agents[u]
+		var row AgentRow
+		if ok {
+			row = *a // 在持读锁期间完成值拷贝，避免与 applyReport 的并发写产生撕裂读
+		}
 		s.mu.RUnlock()
-		if a == nil {
+		if !ok {
 			continue
 		}
-		UpsertAgent(db, *a)
+		UpsertAgent(db, row)
 		if d, ok := tmap[u]; ok && (d.rx > 0 || d.tx > 0) {
 			AddTraffic(db, u, writeMonth, d.rx, d.tx)
 		}
