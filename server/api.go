@@ -112,20 +112,37 @@ func isSecureCookie(r *http.Request) bool {
 	return r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
-// clientIP 提取请求来源 IP。部署在反代（Cloudflare Tunnel / nginx）之后时取
-// X-Forwarded-For 最左侧真实客户端；否则回退 RemoteAddr（去掉端口）。
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if ip := strings.TrimSpace(parts[0]); ip != "" {
-			return ip
-		}
-	}
+// clientIP 提取请求来源 IP。仅当「直连来源 IP」落在可信反代列表 trusted 内时，才信任
+// X-Forwarded-For 取最左侧真实客户端；否则一律用 RemoteAddr（去掉端口）。
+// 这样即使服务直连暴露，攻击者也无法靠伪造 XFF 无限换 IP 绕过登录限流（#顺手）。
+func clientIP(r *http.Request, trusted []*net.IPNet) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if len(trusted) > 0 && isTrustedProxy(host, trusted) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if ip := strings.TrimSpace(parts[0]); ip != "" {
+				return ip
+			}
+		}
 	}
 	return host
+}
+
+// isTrustedProxy 判断直连来源 IP 是否落在可信反代网段内。
+func isTrustedProxy(host string, nets []*net.IPNet) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- 登录限流（按来源 IP） ----------
@@ -133,6 +150,7 @@ func clientIP(r *http.Request) string {
 type loginLimitEntry struct {
 	fail        int
 	lockedUntil int64
+	last        int64 // 最近一次失败时间（Unix 秒），用于 TTL 清理，避免失败 IP 永久残留
 }
 
 var (
@@ -143,6 +161,7 @@ var (
 const (
 	loginMaxFail  = 5
 	loginLockSecs = 15 * 60
+	loginFailTTL  = 30 * 60 // 失败记录最多保留 30 分钟，过期即视为无记录（#顺手：loginFails 无界增长）
 )
 
 func loginCheck(ip string) (locked bool, remain int64) {
@@ -153,6 +172,10 @@ func loginCheck(ip string) (locked bool, remain int64) {
 		return false, 0
 	}
 	now := time.Now().Unix()
+	if now-e.last > loginFailTTL {
+		delete(loginFails, ip)
+		return false, 0
+	}
 	if e.lockedUntil > now {
 		return true, e.lockedUntil - now
 	}
@@ -162,12 +185,17 @@ func loginCheck(ip string) (locked bool, remain int64) {
 func loginRegisterFailure(ip string) (locked bool, remain int64) {
 	loginMu.Lock()
 	defer loginMu.Unlock()
+	now := time.Now().Unix()
 	e := loginFails[ip]
 	if e == nil {
 		e = &loginLimitEntry{}
 		loginFails[ip] = e
+	} else if now-e.last > loginFailTTL {
+		// 记录已过期，重置计数（避免永久累积、绕过限流语义失真）
+		e.fail = 0
+		e.lockedUntil = 0
 	}
-	now := time.Now().Unix()
+	e.last = now
 	e.fail++
 	if e.fail >= loginMaxFail {
 		e.lockedUntil = now + loginLockSecs
@@ -184,7 +212,7 @@ func loginReset(ip string) {
 
 func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
+		ip := clientIP(r, cfg.trustedNets)
 		if locked, remain := loginCheck(ip); locked {
 			http.Error(w, fmt.Sprintf("尝试过于频繁，请 %d 秒后重试", remain), http.StatusTooManyRequests)
 			return
@@ -721,18 +749,30 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			conn.SetReadDeadline(time.Now().Add(agentPongWait))
 			return nil
 		})
-		pingTicker := time.NewTicker(agentPingPeriod)
-		defer pingTicker.Stop()
 		// agent 连接也需要一个 Client 句柄（终端网关靠它 safeWrite 下发 shell 指令）。
 		// 这里不跑 writePump：agent 方向走带锁的 safeWrite 直写，不用 send 通道。
 		client := &Client{hub: hub, conn: conn, send: make(chan []byte, 8), role: "agent"}
+		// ping 保活协程：用 pingDone channel 显式控制退出（#N2）。
+		// time.Ticker.Stop() 不会关闭 channel，若只依赖 Stop，handler 返回后 goroutine 会永久卡在
+		// range 上退不出来——每次 agent 断开都泄漏一个 goroutine（规模 2500 台时尤为严重）。
+		// 关键：close(pingDone) 必须排在 conn.Close() 之前（见下方 defer 函数），
+		// 否则 goroutine 可能在 conn 关闭后又往已关闭连接写一次 Ping。
+		pingDone := make(chan struct{})
 		go func() {
-			for range pingTicker.C {
-				client.safePing()
+			t := time.NewTicker(agentPingPeriod)
+			defer t.Stop()
+			for {
+				select {
+				case <-pingDone:
+					return
+				case <-t.C:
+					client.safePing()
+				}
 			}
 		}()
 		var agentUUID string
 		defer func() {
+			close(pingDone) // 先让 ping 保活协程退出，再关连接
 			if agentUUID != "" {
 				hub.removeAgent(agentUUID)
 				notifyAgentGone(agentUUID)   // 关闭该 agent 名下所有 Web SSH 会话

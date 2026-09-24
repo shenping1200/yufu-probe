@@ -97,7 +97,7 @@ func notifyAgentGone(agentUUID string) {
 func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		targetUUID := mux.Vars(r)["uuid"]
-		ip := clientIP(r)
+		ip := clientIP(r, cfg.trustedNets)
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
