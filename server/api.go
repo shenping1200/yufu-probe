@@ -877,6 +877,16 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	// 访客链接：签发仅管理员，落地页免登录
 	r.HandleFunc("/api/visitor/link", requireAdmin(db, visitorLinkHandler(db))).Methods("POST")
 	r.HandleFunc("/v/{token}", visitorLandingHandler(db)).Methods("GET")
-	r.PathPrefix("/").Handler(http.FileServer(http.FS(staticSubFS)))
+	// 静态资源缓存策略：HTML 不缓存（保证前端更新即生效）；JS/CSS 长缓存（靠 ?v= 版本号破缓存）
+	fileServer := http.FileServer(http.FS(staticSubFS))
+	r.PathPrefix("/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := r.URL.Path
+		if strings.HasSuffix(up, ".js") || strings.HasSuffix(up, ".css") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		fileServer.ServeHTTP(w, r)
+	}))
 	return r
 }
