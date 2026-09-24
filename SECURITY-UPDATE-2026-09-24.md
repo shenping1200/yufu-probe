@@ -1,0 +1,71 @@
+# yufu-probe 安全加固与健壮性修复 更新说明
+
+> 日期：2026-09-24
+> 分支：`main`（fast-forward 合并 `hardening`，`9f754cd..c4d5c0c`）
+> 触发：第三方安全审计（`D:\EXE\yufu-probe-code-review.md`）+ 自审
+> 部署状态：VPS `69.12.75.218:19527` 已重建镜像并验证通过
+
+---
+
+## 一、本次修复清单（含 P0/P1/P2 与自审补充）
+
+### 第一批：公网暴露面（最危险，立即修）
+| 项 | 问题 | 修复 |
+|---|---|---|
+| #1 | 默认弱口令 `admin/admin` + SSH 密码静默回退管理员密码 + 登录零限流 | 登录加 **IP 限流**（5 次/15min，超限 15min 封禁）+ **常数时间比较**；启动期检测到默认口令打印告警（不致命，避免 brick 已有部署） |
+| #2 | Web SSH 锁定仅按 `uuid` 维度，攻击者轮换 uuid 即可重置尝试次数，爆破面=任意机 root | 锁定改为 **`(uuid, 来源IP)` 双维度复合键**；新增审计日志 |
+| #3 | `state.go` Flush 在释放读锁后才解引用拷贝 agent，与 `applyReport` 写字段存在数据竞争 | 锁内完成 `AgentRow` 值拷贝（已静态确认，建议后续补 `go test -race` 跑通） |
+| #19 | `app.js` 8 处 `data-uuid` 未转义，持 `agent_token` 者可注册恶意 uuid 触发存储型 XSS | 全部注入点改用 `escapeHtml()` 转义 |
+
+### 第二批：正确性与资源泄露
+| 项 | 问题 | 修复 |
+|---|---|---|
+| #4 | geo 地理查询失败不写缓存、cache miss 窗口内每条上报都起 goroutine，首启/外网不通时风暴 | 加 **在途去重** + **负缓存(10min)** + **并发上限 100** |
+| #5 | `PATCH /api/agents/{uuid}` 无条件覆盖，漏传字段（如 alias）被静默清空 | `UpdateAgent`/`UpdateAdmin` 改 **指针分部更新**（nil=不动，空串=清空）；顺带修复别名无法清空 |
+| #16 | 流量增量 `rx-tx` 无下溢守卫，计数器回绕/网卡切换时变成天文数字且不可逆累加到月流量 | 加下溢守卫 + **网卡切换重置基线**（记录选中网卡） |
+| #6 | viewer WS 断开后 `send` 通道永不关闭，`writePump` goroutine 永久泄漏 | 新增 `closeOnce` 幂等关闭 `send`，断开时先 `removeViewer` 再 `closeSend` |
+
+### 第三批：稳健性 / 合规 / 清理
+| 项 | 问题 | 修复 |
+|---|---|---|
+| #7 | agent WS 无读超时 / ping，掉电断网产生的半开连接不被回收（Web SSH/部署干等超时） | 加 **读超时(60s)** + **服务端 50s ping / agent 自动 pong** 保活 |
+| #8 | 离线阈值硬编码 15s，与上报间隔解耦，高 interval 部署易抖动 | 改为可配置 `offline_threshold`（默认 15s） |
+| #9 | `pickOS` 兜底分支依赖 map 遍历随机性"碰巧"随机 | 显式随机选 key |
+| #10 | HTTP 加固缺失：无 MaxBytesReader、缺超时、Cookie 非 Secure、`CheckOrigin` 恒 true、内部错误回显 | 全链路超时 + **4MB 请求体限制** + Cookie 标记 `Secure` + WS **同源校验** + 内部错误不再回显 |
+| #11 | `sessions` / `visitor_links` 只增不减 | 每日清理过期访客链接 + 30 天以上会话（24h 周期） |
+| #12 | 零 SQLite 索引，几百~上千行全表扫描 | 为 `agents/sessions/visitor_links/traffic_monthly/ssh_lock` 加 **幂等索引** |
+| #18 | 配置路径硬编码 `configs/server.yaml`，运维在错误目录执行会连错库 | 支持 `-config` 参数 / `YUFU_CONFIG` 环境变量，并打印实际加载路径 |
+| #20 | 合规：HK/TW 被列为独立国家 | 名称改为 **中国香港 / 中国台湾** |
+| #21 | 死代码 / 一致性 | 清理 agent `locale` 占位、terminal 冗余赋值等 |
+
+> 说明：审计报告的 #13/#14/#15/#17 等其余 P2 项（调度 ticker stall、Windows Web SSH、CWD 依赖配置路径等）多为场景限制或低概率，本次未逐一处理，已在仓库 `rollback` 锚点前保留原状；bcrypt 因本机无 Go 工具链、且 VPS 构建联网拉依赖有风险，**降级为"常数时间比较 + 强口令告警 + 登录限流"直接掐断爆破**，bcrypt 列入后续建议。
+
+---
+
+## 二、部署与回退
+
+### 已部署
+- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `a9d03b9cde15`（构建于 2026-09-24 10:22）
+- 容器 `probe-server` 已重建运行，端口 19527，挂载卷 **`yufu-probe_probe-data`**
+- 验证：登录正常、24 台机器在线、**22 个自定义别名完好**（数据卷未丢）、前端 `?v=47` 已生效
+
+### 回退方式（双锚点）
+- **源码**：`git tag rollback-pre-hardening-20260924` → `9f754cd`（已打 tag，未推送，本地留存）
+- **镜像**：`yufu-probe:rollback-pre-hardening-20260924` = 旧镜像 `8dbb113f93cc`（已在 VPS 保留）
+- 回退步骤：`docker tag yufu-probe:rollback-pre-hardening-20260924 ghcr.io/shenping1200/yufu-probe:latest && cd /opt/yufu-probe && docker compose up -d --pull never`
+
+### 部署铁律（务必遵守）
+1. **VPS 永远 `docker compose up -d --pull never`**，绝不裸 `docker run -v probe-data` —— 裸名 `probe-data` 会被 Docker 静默建空卷，造成"数据丢失"假象（历史事故）。
+2. 真实数据卷是 compose 前缀的 **`yufu-probe_probe-data`**，不是裸 `probe-data`（后者是事故孤儿，勿动）。
+3. 前端是 Go embed 打进二进制，**改前端必须重编镜像**，切勿 scp 静态文件到磁盘（无效）。
+4. VPS 上的 `configs/server.yaml`（含真实口令）**绝不从本地 push**；本地 `main` 的 `configs/server.yaml` 是默认模板，勿覆盖生产配置。
+5. 改完前端记得 bump `index.html` 里的 `?v=` 版本号，否则浏览器按 `immutable` 缓存一年不刷新（本次已从 46→47）。
+
+> ⚠️ VPS `/opt/yufu-probe` 目录的 git 状态较旧（被 scp 覆盖、残留早期未提交改动），**不影响运行**（运行用镜像）。如需在 VPS 重新构建，请先 `git pull` 或重新 scp 最新源码，**并保留 VPS 本地 `configs/server.yaml`**。
+
+---
+
+## 三、后续建议（未本次实施）
+- 引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。
+- 加 CI 跑 **`go test -race ./server/`** 固化并发正确性。
+- 评估报告其余 P2 项（调度 ticker stall、Windows Web SSH 等）是否在本项目适用。
