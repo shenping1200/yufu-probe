@@ -45,9 +45,9 @@
 ## 二、部署与回退
 
 ### 已部署
-- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `15d118cef089`（构建于 2026-09-25 ~00:00，含二次热修 + 拖拽手柄回归修复）
+- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `4fc42b2b2202`（构建于 2026-09-25，含 P1+D 修复；历史镜像：`15d118cef089` 二次热修+拖拽手柄、`f1d6fbb80c9a` 二次热修、`8dbb113f93cc` 初版 hardening）
 - 容器 `probe-server` 已重建运行，端口 19527，挂载卷 **`yufu-probe_probe-data`**
-- 验证：登录正常、25 台机器在线、**23 个自定义别名完好**（数据卷未丢）、前端 `?v=48` 已生效
+- 验证：登录正常、25 台机器在线、**23 个自定义别名完好**（数据卷未丢）、前端 `?v=48` 已生效；本次重建后再验证——25+ agent 经 WS 正常回连、日志无 panic、P1 自动信任分支经回环+XFF 探测实测触发（见「五」）
 
 ### 回退方式（双锚点）
 - **源码**：`git tag rollback-pre-hardening-20260924` → `9f754cd`（已打 tag，未推送，本地留存）
@@ -121,7 +121,47 @@
 
 ---
 
-## 五、后续建议（更新）
+## 五、v3 复审修复（🔴 P1 + 🟠🟡 D 项，2026-09-25）
+
+> 触发：第三方交叉验证复审（`D:\EXE\yufu-probe-code-review-v3.md`）对照源码复核 hardening + 二次热修，
+> 确认 N1/N2/U1 真修好，并给出 🔴 P1（空 trusted_proxy+反代=自我 DoS）与若干 D 项。
+> 分支：`main`（fast-forward 合并 `fix-p1-trusted-proxy`，`502e6c4..3db6938`，1 个提交）
+> 部署状态：VPS 已重建镜像 `4fc42b2b2202` 并验证通过
+
+### 🔴 P1：空 trusted_proxy + 反代 = 自我 DoS
+- **机制（属实）**：二次热修引入 `trusted_proxy` 后，若运维**不填**该值（675 直连部署即如此），`clientIP()` 一律用 `RemoteAddr` 当限流 key。面板一旦经 caddy/nginx 反代，所有请求共用反代 IP 一个桶，连续 5 次登录失败锁死管理员 15 分钟（self-DoS）。
+- **严重度校正**：675 实际是**直连暴露**（无 caddy 容器，docker-proxy 直连 19527），公网客户端 `RemoteAddr` 为公网 IP，本就不共用桶 → **675 不触发**；风险只在「反代拓扑 + 不配 trusted_proxy」。
+- **修复（根治，覆盖两种拓扑）**：重写 `clientIP()`——
+  1. 显式配置 `trusted_proxy` 时，仅当直连来源落在该列表才信任 XFF（原逻辑）；
+  2. **未配置时，若直连来源是私网/回环（反代几乎必然），自动信任 XFF 取真实客户端**，使每个客户端各自一个限流桶，不被压成同一个；
+  3. 公网直连暴露（直连来源是公网 IP）仍只用 `RemoteAddr`，保留「不信任伪造 XFF」安全意图（公网攻击者无法伪造私网/回环来源，BCP38 入口过滤会丢弃）；
+  4. 显式配置但不匹配时打 `[WARN]` 提示运维核对。
+- **验证（VPS 实测）**：从回环 `127.0.0.1` 带 `X-Forwarded-For: 203.0.113.99` 打 `/api/login`，日志打出
+  `[config] 检测到反代（私网/回环来源），已自动信任 X-Forwarded-For 取真实客户端 IP；如需收紧可显式配置 trusted_proxy`，证明自动信任分支生效；675 公网直连行为不变（agents 正常回连、无 panic）。
+
+### 🟠 D1：裸 IPv6 误补 /32
+- `parseTrustedProxies()` 裸 IP 一律补 `/32`，裸 IPv6 会被当成 2^96 个地址的可信反代。
+- 修复：按版本补掩码，IPv4→`/32`、IPv6→`/128`。
+
+### 🟡 D2：loginFails 惰性 TTL 缓慢泄漏
+- 二次热修加的 TTL 只在**命中该 IP** 时触发清理；一次性扫描 IP（每个 IP 只试一次）永不回访则条目永久残留、map 缓慢增长。
+- 修复：新增 `startLoginFailsReaper()` 每 10 分钟**主动**扫描删除过期条目兜底（`main.go` 启动调用）。
+
+### 🟡 D3：exec.go 死代码（写超时语义混乱）
+- `runExec()` 内 3 处 `SetWriteDeadline(15s)` 与 `safeWrite/safePing` 统一 10s 写超时重复且冲突（15s 盖 10s），属死代码。
+- 修复：删除 3 处 `SetWriteDeadline`，写超时完全交给 `safeWrite`；`exec.go` 仍用 `time` 包（timeout 等），无 orphan import。
+
+### 涉及文件
+`server/api.go`（clientIP 改写 + reaper + 两个 `sync.Once` 日志）、`server/config.go`（IPv6 /128）、
+`server/exec.go`（删死代码）、`server/main.go`（启 reaper）、`configs/server.yaml`（补 `trusted_proxy` + `offline_threshold` 注释模板；该文件被上传脚本排除，不覆盖生产配置）
+
+### 回退锚点
+- 源码：`git tag pre-fix-p1-trusted-proxy-20260925` → `502e6c4`（**已推送 GitHub**，回退即 checkout 该 tag 重编）
+- 镜像：当前 `ghcr.io/shenping1200/yufu-probe:latest` = `4fc42b2b2202`（构建于 2026-09-25）
+
+---
+
+## 六、后续建议（更新）
 - 引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。
 - 加 CI 跑 **`go test -race ./server/`**，并加一条**长请求冒烟用例**（断言 exec 超时 > WriteTimeout 不失败）——N1/U1 这类"读代码难发现、一跑就露馅"的回归只能靠它自动抓。
 - 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
