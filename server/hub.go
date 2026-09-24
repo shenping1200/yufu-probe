@@ -105,13 +105,18 @@ func (h *Hub) BroadcastToViewers(payload []byte) {
 func (c *Client) safeWrite(payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(agentWriteTimeout))
+	defer c.conn.SetWriteDeadline(time.Time{})
 	return c.conn.WriteMessage(websocket.TextMessage, payload)
 }
 
-// safePing 带锁发送 Ping 控制帧，与 safeWrite 共用 writeMu 保证单写者（#7）
+// safePing 带锁发送 Ping 控制帧，与 safeWrite 共用 writeMu 保证单写者（#7）。
+// 写前设置写超时、写后清除，避免对端不读时永久阻塞并持有 writeMu 卡死该 agent 的全部写入（#顺手）。
 func (c *Client) safePing() {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(agentWriteTimeout))
+	defer c.conn.SetWriteDeadline(time.Time{})
 	_ = c.conn.WriteMessage(websocket.PingMessage, nil)
 }
 
@@ -120,6 +125,11 @@ func (c *Client) safePing() {
 // 此时直接断开让它按前端的重连逻辑重来，好过让 writePump 永久阻塞在一次写上——
 // 阻塞期间 drop-oldest 换不动队列，界面只会停在越来越旧的快照上。
 const viewerWriteTimeout = 30 * time.Second
+
+// agentWriteTimeout 单帧（Ping / 控制指令）写出超时。对端若不读，最多阻塞该时长后失败并立即
+// 释放 writeMu，避免永久卡死该 agent 连接上的所有 Web SSH / 部署写入（#顺手：safePing 无写超时）。
+// 每次写前设置、写后用零值清除，确保不影响同连接上其他写入（如终端指令 safeWrite）。
+const agentWriteTimeout = 10 * time.Second
 
 // writePump 持续把 send 通道的消息写出到连接。
 // 目前只有 viewer 连接使用（agent 与终端方向走带锁的 safeWrite 直写），
