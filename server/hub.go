@@ -108,6 +108,13 @@ func (c *Client) safeWrite(payload []byte) error {
 	return c.conn.WriteMessage(websocket.TextMessage, payload)
 }
 
+// safePing 带锁发送 Ping 控制帧，与 safeWrite 共用 writeMu 保证单写者（#7）
+func (c *Client) safePing() {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = c.conn.WriteMessage(websocket.PingMessage, nil)
+}
+
 // viewerWriteTimeout 单帧写出超时。压缩后的全量快照约 285KB，30 秒还写不完
 // 说明这个 viewer 已经彻底跟不上（断网、链路极慢或标签页被冻结）。
 // 此时直接断开让它按前端的重连逻辑重来，好过让 writePump 永久阻塞在一次写上——
