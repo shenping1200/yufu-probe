@@ -150,15 +150,18 @@ func InitDB(path string) (*sql.DB, error) {
 	}
 	// 关键查询索引（幂等，已存在则静默忽略）。agents 表几百~上千行时，
 	// 按 group_name / online / last_seen 过滤与排序从全表扫描降到索引命中。
+	// 清理 hardening 期间误加的冗余索引（#顺手）：
+	//  - idx_ssh_lock_uuid：ssh_lock 表主键本就在 uuid 列，索引冗余
+	//  - idx_agents_online：online 仅 0/1 两值，选择性极差，索引几乎无用且拖慢写入
+	_, _ = db.Exec(`DROP INDEX IF EXISTS idx_ssh_lock_uuid`)
+	_, _ = db.Exec(`DROP INDEX IF EXISTS idx_agents_online`)
 	idxStmts := []string{
 		`CREATE INDEX IF NOT EXISTS idx_agents_group ON agents(group_name)`,
-		`CREATE INDEX IF NOT EXISTS idx_agents_online ON agents(online)`,
 		`CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen)`,
 		`CREATE INDEX IF NOT EXISTS idx_agents_created ON agents(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_visitor_expires ON visitor_links(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_ym ON traffic_monthly(year_month)`,
-		`CREATE INDEX IF NOT EXISTS idx_ssh_lock_uuid ON ssh_lock(uuid)`,
 	}
 	for _, s := range idxStmts {
 		_, _ = db.Exec(s)
@@ -506,11 +509,12 @@ func RecordSSHFailure(db *sql.DB, uuid, ip string) (locked bool, lockedUntil int
 	return
 }
 
-// ResetSSHLock 密码正确时调用：清零失败计数与锁定时间。
+// ResetSSHLock 密码正确时调用：清除该 (uuid, ip) 的失败计数与锁定记录。
+// 用 DELETE 而非写 0，避免 ssh_lock 表只增不减、长期累积无效行（#顺手）。
+// GetSSHLock 对缺失行返回 (0,0,nil)，与 fail_count=0 语义等价。
 func ResetSSHLock(db *sql.DB, uuid, ip string) error {
 	key := uuid + "|" + ip
-	_, err := db.Exec(`INSERT INTO ssh_lock (uuid, fail_count, locked_until) VALUES (?,0,0)
-		ON CONFLICT(uuid) DO UPDATE SET fail_count=0, locked_until=0`, key)
+	_, err := db.Exec(`DELETE FROM ssh_lock WHERE uuid = ?`, key)
 	return err
 }
 
