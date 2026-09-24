@@ -329,26 +329,37 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		alias := ""
+		// 指针语义：nil = 未提供（保持不变）；非 nil = 显式设置（含空串清空）
+		var alias *string
 		if v, ok := raw["name"]; ok {
-			_ = json.Unmarshal(v, &alias)
+			var s string
+			_ = json.Unmarshal(v, &s)
+			alias = &s
 		} else if v, ok := raw["alias"]; ok {
-			_ = json.Unmarshal(v, &alias)
+			var s string
+			_ = json.Unmarshal(v, &s)
+			alias = &s
 		}
-		remark := ""
+		var remark *string
 		if v, ok := raw["remark"]; ok {
-			_ = json.Unmarshal(v, &remark)
+			var s string
+			_ = json.Unmarshal(v, &s)
+			remark = &s
 		}
-		group := ""
+		var group *string
 		groupProvided := false
 		if v, ok := raw["group"]; ok {
-			_ = json.Unmarshal(v, &group)
+			var s string
+			_ = json.Unmarshal(v, &s)
+			group = &s
 			groupProvided = true
 		}
 		var expireAt *int64
 		if v, ok := raw["expire_at"]; ok {
-			// 支持 null（清空）或数字（Unix 秒）
-			if string(v) != "null" && len(v) > 0 {
+			if string(v) == "null" {
+				z := int64(0)
+				expireAt = &z // 显式清空到期时间
+			} else if len(v) > 0 {
 				var n int64
 				if err := json.Unmarshal(v, &n); err == nil {
 					expireAt = &n
@@ -360,9 +371,9 @@ func updateAgentHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		live.UpdateAdmin(uuid, alias, remark, group, expireAt)
-		// 保持内存态「分组名注册表」与 DB 一致：通过编辑弹窗手输的新名字也要注册进来
-		if group != "" {
-			live.AddGroup(group)
+		// 保持内存态「分组名注册表」与 DB 一致
+		if group != nil && *group != "" {
+			live.AddGroup(*group)
 		}
 		// 管理员改分组即重新武装自动部署：清空 done/failed 终态，
 		// 使本机进入源分组后能被规则重新部署（见 resetDeployState）。
@@ -908,6 +919,7 @@ func viewerWSHandler(db *sql.DB, hub *Hub) http.HandlerFunc {
 		go client.writePump()
 		defer func() {
 			hub.removeViewer(client)
+			client.closeSend()
 			conn.Close()
 		}()
 		broadcastAgents(hub)

@@ -258,18 +258,48 @@ func ListAgents(db *sql.DB, yearMonth string) ([]AgentRow, error) {
 	return out, nil
 }
 
-// UpdateAgent 更新机器的显示名称(alias)、备注(remark)、分组(group_name)与到期时间(expireAt)。
-// expireAt 为 nil 表示清空到期时间（设为 NULL）。
-// 如果 group 不为空，会自动注册到 groups 表（INSERT OR IGNORE），保持「分组名注册表」与实际使用同步。
-func UpdateAgent(db *sql.DB, uuid, alias, remark, group string, expireAt *int64) error {
-	var v sql.NullInt64
+// UpdateAgent 部分更新某台机器：仅更新传入的非 nil 字段，其余列保持不变——
+// 修复「PATCH 漏传字段被静默清空」的契约缺陷（#5）。
+// group 非 nil 且非空时同步注册进 groups 表；expireAt 非 nil 时写入（指针值，0 视为清空）。
+func UpdateAgent(db *sql.DB, uuid string, alias, remark, group *string, expireAt *int64) error {
+	var sets []string
+	var args []interface{}
+	if alias != nil {
+		sets = append(sets, "alias=?")
+		args = append(args, *alias)
+	}
+	if remark != nil {
+		sets = append(sets, "remark=?")
+		args = append(args, *remark)
+	}
+	if group != nil {
+		sets = append(sets, "group_name=?")
+		args = append(args, *group)
+		if *group != "" {
+			_, _ = db.Exec(`INSERT OR IGNORE INTO groups (name, created_at) VALUES (?, ?)`, *group, time.Now().Unix())
+		}
+	}
 	if expireAt != nil {
-		v = sql.NullInt64{Int64: *expireAt, Valid: true}
+		var v sql.NullInt64
+		if *expireAt != 0 {
+			v = sql.NullInt64{Int64: *expireAt, Valid: true}
+		}
+		sets = append(sets, "expire_at=?")
+		args = append(args, v)
 	}
-	if group != "" {
-		_, _ = db.Exec(`INSERT OR IGNORE INTO groups (name, created_at) VALUES (?, ?)`, group, time.Now().Unix())
+	if len(sets) == 0 {
+		return nil
 	}
-	_, err := db.Exec(`UPDATE agents SET alias=?, remark=?, group_name=?, expire_at=? WHERE uuid=?`, alias, remark, group, v, uuid)
+	q := "UPDATE agents SET "
+	for i, s := range sets {
+		if i > 0 {
+			q += ", "
+		}
+		q += s
+	}
+	q += " WHERE uuid=?"
+	args = append(args, uuid)
+	_, err := db.Exec(q, args...)
 	return err
 }
 

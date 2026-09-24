@@ -238,15 +238,16 @@ func (s *ServerState) SetOffline(threshold int64) {
 	s.mu.Unlock()
 }
 
-// UpdateAdmin 更新管理员字段（别名/备注/分组/到期），同步内存
-func (s *ServerState) UpdateAdmin(uuid, alias, remark, group string, expireAt *int64) {
+// UpdateAdmin 部分更新管理员字段：仅更新传入的非 nil 字段，其余保持不变
+// （修复「别名无法清空」与「漏传字段被静默清空」 #5）。
+func (s *ServerState) UpdateAdmin(uuid string, alias, remark, group *string, expireAt *int64) {
 	s.updateAdmin(uuid, alias, remark, group, expireAt, true)
 }
 
 // UpdateAdminEphemeral 与 UpdateAdmin 行为一致，但不标记 dirty——
 // 用于压测引擎给模拟机打分组，避免 Flush 把它们写入 SQLite。
 func (s *ServerState) UpdateAdminEphemeral(uuid, alias, remark, group string, expireAt *int64) {
-	s.updateAdmin(uuid, alias, remark, group, expireAt, false)
+	s.updateAdmin(uuid, &alias, &remark, &group, expireAt, false)
 }
 
 // PatchAgentFields 只更新请求中提供的字段（指针非 nil 才改），用于批量编辑时
@@ -269,19 +270,25 @@ func (s *ServerState) PatchAgentFields(uuid string, group, remark *string, expir
 	}
 }
 
-func (s *ServerState) updateAdmin(uuid, alias, remark, group string, expireAt *int64, persist bool) {
+func (s *ServerState) updateAdmin(uuid string, alias, remark, group *string, expireAt *int64, persist bool) {
 	s.mu.Lock()
 	a, ok := s.agents[uuid]
 	if !ok {
 		a = &AgentRow{UUID: uuid}
 		s.agents[uuid] = a
 	}
-	if alias != "" {
-		a.Alias = alias
+	if alias != nil {
+		a.Alias = *alias
 	}
-	a.Remark = remark
-	a.Group = group
-	a.ExpireAt = expireAt
+	if remark != nil {
+		a.Remark = *remark
+	}
+	if group != nil {
+		a.Group = *group
+	}
+	if expireAt != nil {
+		a.ExpireAt = expireAt
+	}
 	if persist {
 		s.dirty[uuid] = true
 	}
