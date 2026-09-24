@@ -9,13 +9,14 @@ import (
 
 // Config 服务端配置
 type Config struct {
-	Listen      string      `yaml:"listen"`
-	Port        int         `yaml:"port"`
-	TLS         TLSConfig   `yaml:"tls"`
-	AgentToken  string      `yaml:"agent_token"`
-	SSHPassword string      `yaml:"ssh_password"` // Web SSH 连接密码；为空时回退到管理员密码
-	Admin       AdminConfig `yaml:"admin"`
-	DBPath      string      `yaml:"db_path"`
+	Listen           string      `yaml:"listen"`
+	Port             int         `yaml:"port"`
+	OfflineThreshold int         `yaml:"offline_threshold"` // 判定离线的秒数；建议 ≥3×最大上报间隔，避免高 interval 部署抖动
+	TLS              TLSConfig   `yaml:"tls"`
+	AgentToken       string      `yaml:"agent_token"`
+	SSHPassword      string      `yaml:"ssh_password"` // Web SSH 连接密码；为空时回退到管理员密码
+	Admin            AdminConfig `yaml:"admin"`
+	DBPath           string      `yaml:"db_path"`
 }
 
 type TLSConfig struct {
@@ -57,6 +58,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Port == 0 {
 		c.Port = 8080
+	}
+	if c.OfflineThreshold == 0 {
+		c.OfflineThreshold = 15
 	}
 	if c.DBPath == "" {
 		c.DBPath = "data/probe.db"
