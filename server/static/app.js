@@ -1051,12 +1051,13 @@ function renderList() {
     <thead>
       <tr>
         <th class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" id="selectAllChk" onclick="event.stopPropagation()"></label></th>
-        <th>状态</th><th>别名</th><th>位置</th><th>配置</th><th>运行时间</th>
+        <th>状态</th><th>别名</th><th>位置</th><th>配置</th><th>运行时间 <button class="sort-uptime-btn" id="sortUptimeBtn" type="button" title="切换运行时间排序（默认 / 长→短 / 短→长）">⇅</button></th>
         <th>使用率</th><th>实时速率</th><th>本月流量</th><th style="width:1%;white-space:nowrap">操作</th>
       </tr>
     </thead>`;
   if (list.length === 0) {
     scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody><tr><td colspan="10" class="empty-tip">该分组下暂无客户端</td></tr></tbody></table></div>`;
+    bindSortControls();
     lastListMode = 'empty';
     return;
   }
@@ -1078,6 +1079,7 @@ function renderList() {
     scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody></tbody></table></div>`;
     lastListMode = 'virt';
   }
+  bindSortControls();
   renderListWindow(scroll.scrollTop);
 }
 function renderListWindow(scrollTop) {
