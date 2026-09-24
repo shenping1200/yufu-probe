@@ -161,7 +161,7 @@ func InitDB(path string) (*sql.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_ssh_lock_uuid ON ssh_lock(uuid)`,
 	}
 	for _, s := range idxStmts {
-		_ = db.Exec(s)
+		_, _ = db.Exec(s)
 	}
 	// 兼容旧库：补加后续新增列（已存在则忽略错误）
 	db.Exec(`ALTER TABLE agents ADD COLUMN cpu_count INTEGER DEFAULT 0`)
