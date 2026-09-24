@@ -89,6 +89,8 @@ function bindSortControls() {
   const btn = document.getElementById('sortUptimeBtn');
   if (btn) { btn.textContent = uptimeSortIcon(); btn.onclick = (e) => { e.stopPropagation(); cycleUptimeSort(); }; }
 }
+// 拖拽进行中标志：避免 2 秒快照重建 DOM 打断正在进行的拖拽
+let dragActive = false;
 // 拖拽排序：container 内 itemSel 元素设为可拖拽，拖放后按 DOM 顺序保存为 custom 顺序
 function attachDragSort(container, itemSel) {
   container.querySelectorAll(itemSel).forEach(item => {
@@ -96,9 +98,10 @@ function attachDragSort(container, itemSel) {
     item.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', item.dataset.uuid);
+      dragActive = true;
       setTimeout(() => item.classList.add('dragging'), 0);
     });
-    item.addEventListener('dragend', () => item.classList.remove('dragging'));
+    item.addEventListener('dragend', () => { item.classList.remove('dragging'); dragActive = false; });
     item.addEventListener('dragover', (e) => {
       e.preventDefault();
       const dragging = container.querySelector('.dragging');
@@ -554,8 +557,8 @@ function filteredAgents() {
 // 当前页要渲染的机器列表：在 filteredAgents() 基础上按 pageSize/page 切片。
 // 统计（renderSummary）、全选（selectAll）仍基于 filteredAgents() 全量，不受分页影响。
 function currentPageList() {
-  const list = filteredAgents();
-  const ps = state.pageSize;
+  let list = applySort(filteredAgents(), state.currentGroup);
+  const ps = effectivePageSize();
   if (ps === 'all' || !ps || list.length <= ps) return list;
   const pageCount = Math.max(1, Math.ceil(list.length / ps));
   const page = Math.min(Math.max(1, state.page || 1), pageCount);
@@ -892,6 +895,7 @@ let lastCardMode = '';
 let lastCardCols = -1;
 function renderCard() {
   const scroll = agentsScrollEl;
+  if (dragActive) return; // 拖拽进行中时不重建 DOM，避免打断拖拽
   const list = currentPageList();
   if (list.length === 0) {
     scroll.innerHTML = `<div class="empty-tip">该分组下暂无客户端</div>`;
@@ -904,7 +908,7 @@ function renderCard() {
     for (const a of list) html += cardHTML(a);
     scroll.innerHTML = `<div class="agents-grid">${html}</div>`;
     bindCardEvents(scroll);
-    if (sortIsCustom(state.currentGroup)) attachDragSort(scroll, '.agent-card');
+    attachDragSort(scroll, '.agent-card');
     lastCardMode = 'full';
     return;
   }
@@ -1018,7 +1022,7 @@ function listRowHTML(a) {
   const cd = fmtCountdown(a.expire_at);
   const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
   return `
-    <tr>
+    <tr data-uuid="${a.uuid}">
       <td class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" data-uuid="${a.uuid}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label></td>
       <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
       <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
@@ -1046,6 +1050,7 @@ const LIST_ROW_H = 64;
 let lastListMode = '';
 function renderList() {
   const scroll = agentsScrollEl;
+  if (dragActive) return; // 拖拽进行中时不重建 DOM，避免打断拖拽
   const list = currentPageList();
   const thead = `
     <thead>
@@ -1068,7 +1073,7 @@ function renderList() {
     scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody>${rows}</tbody></table></div>`;
     bindListEvents(scroll);
     const tbody = scroll.querySelector('tbody');
-    if (tbody && sortIsCustom(state.currentGroup)) attachDragSort(tbody, 'tr');
+    if (tbody) attachDragSort(tbody, 'tr');
     bindSortControls();
     lastListMode = 'full';
     return;
