@@ -108,6 +108,9 @@ func main() {
 		}
 	}()
 
+	// 登录失败记录回收：周期性清理过期条目，避免一次性扫描 IP 永久残留导致 map 缓慢增长（v3 🟡）
+	startLoginFailsReaper()
+
 	// 定期清理：过期访客链接 + 30 天以上会话，避免两张表只增不减（#11）
 	go func() {
 		t := time.NewTicker(24 * time.Hour)

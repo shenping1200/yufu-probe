@@ -113,23 +113,56 @@ func isSecureCookie(r *http.Request) bool {
 }
 
 // clientIP 提取请求来源 IP。仅当「直连来源 IP」落在可信反代列表 trusted 内时，才信任
-// X-Forwarded-For 取最左侧真实客户端；否则一律用 RemoteAddr（去掉端口）。
-// 这样即使服务直连暴露，攻击者也无法靠伪造 XFF 无限换 IP 绕过登录限流（#顺手）。
+// clientIP 返回用于审计/限流的客户端来源 IP。
+//
+// 信任策略（解决「反代部署 + trusted_proxy 为空 → 所有请求共用 RemoteAddr 一个限流桶 →
+// 5 次登录失败锁死管理员 15 分钟」的自我 DoS，见 v3 复审 🔴 P1）：
+//  1) 显式配置 trusted_proxy 时，仅当直连来源落在该列表内才信任 X-Forwarded-For；
+//  2) 未配置 trusted_proxy 时，若直连来源是私网/回环（几乎必然是本机或同网络的 caddy/nginx
+//     反代），自动信任 XFF 取真实客户端——使每个客户端各自一个限流桶，不被压成同一个；
+//  3) 公网直连暴露（直连来源是公网 IP）时仍只用 RemoteAddr，保留「不信任伪造 XFF」的安全意图
+//     （公网攻击者无法伪造私网/回环来源 IP，BCP38 入口过滤会丢弃）。
 func clientIP(r *http.Request, trusted []*net.IPNet) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if len(trusted) > 0 && isTrustedProxy(host, trusted) {
+	if len(trusted) > 0 {
+		if isTrustedProxy(host, trusted) {
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				if ip := strings.TrimSpace(strings.Split(xff, ",")[0]); ip != "" {
+					return ip
+				}
+			}
+		}
+		// 显式配置了 trusted_proxy，但直连来源是私网/回环却不在列表内：XFF 不会被信任，
+		// 反代部署下仍会共用一个限流桶（self-DoS 隐患），提示运维核对配置。
+		if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+			proxyTrustMismatchLogged.Do(func() {
+				log.Printf("[WARN] trusted_proxy 已配置，但直连来源 %s 是私网/回环且不在列表内，XFF 不会被信任；反代部署下可能共用限流桶导致锁死管理员，请核对 trusted_proxy", host)
+			})
+		}
+		return host
+	}
+	// 未配置 trusted_proxy：私网/回环直连来源（反代）自动信任 XFF，避免限流桶被压成同一个
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if ip := strings.TrimSpace(parts[0]); ip != "" {
-				return ip
+			if x := strings.TrimSpace(strings.Split(xff, ",")[0]); x != "" {
+				proxyAutoTrustLogged.Do(func() {
+					log.Printf("[config] 检测到反代（私网/回环来源），已自动信任 X-Forwarded-For 取真实客户端 IP；如需收紧可显式配置 trusted_proxy")
+				})
+				return x
 			}
 		}
 	}
 	return host
 }
+
+// proxyAutoTrustLogged 保证反代自动信任 XFF 的提示只打印一次，避免刷屏。
+var proxyAutoTrustLogged sync.Once
+
+// proxyTrustMismatchLogged 保证 trusted_proxy 配置不匹配的告警只打印一次。
+var proxyTrustMismatchLogged sync.Once
 
 // isTrustedProxy 判断直连来源 IP 是否落在可信反代网段内。
 func isTrustedProxy(host string, nets []*net.IPNet) bool {
@@ -208,6 +241,26 @@ func loginReset(ip string) {
 	loginMu.Lock()
 	defer loginMu.Unlock()
 	delete(loginFails, ip)
+}
+
+// startLoginFailsReaper 周期性清理过期的登录失败记录，避免一次性扫描 IP（每个 IP 只试一次）
+// 永不回访导致条目永久残留、map 缓慢增长（v3 🟡：loginCheck/RegisterFailure 的 TTL 清理是
+// 惰性的，只在命中该 IP 时才触发；这里补一个主动周期清理兜底）。
+func startLoginFailsReaper() {
+	go func() {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			now := time.Now().Unix()
+			loginMu.Lock()
+			for ip, e := range loginFails {
+				if now-e.last > loginFailTTL {
+					delete(loginFails, ip)
+				}
+			}
+			loginMu.Unlock()
+		}
+	}()
 }
 
 func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {

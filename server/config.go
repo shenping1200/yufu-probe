@@ -60,7 +60,8 @@ func defaultConfig() *Config {
 }
 
 // parseTrustedProxies 把逗号分隔的 IP/CIDR 字符串解析为网段列表（启动时调用一次）。
-// 空串或非法项会被忽略；单 IP 自动按 /32 处理。
+// 空串或非法项会被忽略；裸 IP 按版本补掩码：IPv4 → /32，IPv6 → /128（避免 v3 🟠：
+// 裸 IPv6 误补 /32 会把 2^96 个地址划成可信反代）。
 func parseTrustedProxies(s string) []*net.IPNet {
 	var nets []*net.IPNet
 	if s == "" {
@@ -72,7 +73,11 @@ func parseTrustedProxies(s string) []*net.IPNet {
 			continue
 		}
 		if !strings.Contains(p, "/") {
-			p += "/32"
+			if v := net.ParseIP(p); v != nil && v.To4() == nil {
+				p += "/128" // IPv6 裸地址
+			} else {
+				p += "/32" // IPv4 裸地址（或非法裸值，交由下方 ParseCIDR 报错忽略）
+			}
 		}
 		if _, ipnet, err := net.ParseCIDR(p); err == nil {
 			nets = append(nets, ipnet)
