@@ -214,6 +214,19 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 }
 .agents-table tr:last-child td { border-bottom: none; }
 .agents-table tr:hover td { background: rgba(88,166,255,.06); }
+/* 运行时间排序按钮 + 拖拽排序视觉态 */
+.sort-uptime-btn {
+  margin-left: 4px; cursor: pointer; border: 1px solid var(--border);
+  background: var(--bg-2); color: var(--text-2); border-radius: 4px;
+  font-size: 12px; line-height: 1; padding: 1px 5px; vertical-align: middle;
+}
+.sort-uptime-btn:hover { color: var(--text); border-color: var(--accent, #58a6ff); }
+.agents-table tr[draggable="true"] { cursor: grab; }
+.agents-table tr.dragging, .agents-grid .agent-card.dragging {
+  opacity: .45; outline: 2px dashed var(--accent, #58a6ff);
+}
+.agents-grid .agent-card[draggable="true"] { cursor: grab; }
+.agents-grid .agent-card[draggable="true"]:hover { outline: 1px solid var(--accent, #58a6ff); }
 .agents-table .list-name {
   font-size: 13px; font-weight: 600; color: var(--text);
   background: transparent; border: 1px solid transparent; border-radius: 6px;

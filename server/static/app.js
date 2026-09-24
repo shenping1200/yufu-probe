@@ -24,6 +24,96 @@ const state = {
   // 批量多选：选中的客户端 uuid 集合；切换分组/筛选时会清理
   selected: new Set(),
 };
+
+// ---------- 分组内排序偏好（后端持久化，各分组独立；group 空串 ""=全部视图）----------
+// 排序模式：default=保持服务端默认（按添加时间）；uptime_asc/desc=按运行时间升/降序；
+// custom=自定义拖拽顺序。拖拽仅在 custom 模式可用（该模式关闭虚拟滚动，整组渲染便于拖拽）。
+// 服务端每 2 秒广播全量快照会覆盖 state.agents 顺序，因此排序必须在每次渲染时按当前分组的
+// 偏好重新施加，不能依赖一次性的前端排序结果。
+const sortPref = {};
+function getSortPref(g) { return sortPref[g] || { mode: 'default', order: [] }; }
+async function loadAllSortPrefs() {
+  try {
+    const r = await fetch('/api/group-sort');
+    if (r.ok) {
+      const d = await r.json();
+      for (const k in d) sortPref[k] = { mode: d[k].mode || 'default', order: d[k].order || [] };
+    }
+  } catch (e) { /* 离线/未配置时静默降级为默认排序 */ }
+}
+async function saveSortPref(g, mode, order) {
+  sortPref[g] = { mode, order: order || [] };
+  try {
+    const r = await fetch('/api/group-sort', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group: g, mode, order: order || [] }),
+    });
+    if (!r.ok) console.error('[sort] 保存失败 HTTP', r.status);
+  } catch (e) { console.error('[sort] 保存异常', e); }
+}
+// 按当前分组偏好对列表重新排序；每次渲染（含每 2 秒快照后）都会调用，解决广播覆盖问题
+function applySort(list, g) {
+  const p = getSortPref(g);
+  if (p.mode === 'uptime_desc') return [...list].sort((a, b) => (b.uptime || 0) - (a.uptime || 0));
+  if (p.mode === 'uptime_asc') return [...list].sort((a, b) => (a.uptime || 0) - (b.uptime || 0));
+  if (p.mode === 'custom') {
+    const idx = {}; p.order.forEach((u, i) => { idx[u] = i; });
+    return [...list].sort((a, b) => {
+      const ia = idx.hasOwnProperty(a.uuid) ? idx[a.uuid] : 1e15;
+      const ib = idx.hasOwnProperty(b.uuid) ? idx[b.uuid] : 1e15;
+      if (ia !== ib) return ia - ib;
+      if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+      return a.uuid < b.uuid ? -1 : 1;
+    });
+  }
+  return list;
+}
+function sortIsCustom(g) { return getSortPref(g).mode === 'custom'; }
+// 自定义排序时整组渲染（关闭分页 + 虚拟滚动），便于拖拽
+function effectivePageSize() {
+  if (sortIsCustom(state.currentGroup)) return 'all';
+  return state.pageSize;
+}
+function uptimeSortIcon() {
+  const m = getSortPref(state.currentGroup).mode;
+  return m === 'uptime_desc' ? '↓' : m === 'uptime_asc' ? '↑' : '⇅';
+}
+async function cycleUptimeSort() {
+  const g = state.currentGroup;
+  const p = getSortPref(g);
+  const next = p.mode === 'default' ? 'uptime_desc' : p.mode === 'uptime_desc' ? 'uptime_asc' : 'default';
+  await saveSortPref(g, next, p.order);
+  render();
+}
+function bindSortControls() {
+  const btn = document.getElementById('sortUptimeBtn');
+  if (btn) { btn.textContent = uptimeSortIcon(); btn.onclick = (e) => { e.stopPropagation(); cycleUptimeSort(); }; }
+}
+// 拖拽排序：container 内 itemSel 元素设为可拖拽，拖放后按 DOM 顺序保存为 custom 顺序
+function attachDragSort(container, itemSel) {
+  container.querySelectorAll(itemSel).forEach(item => {
+    item.setAttribute('draggable', 'true');
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', item.dataset.uuid);
+      setTimeout(() => item.classList.add('dragging'), 0);
+    });
+    item.addEventListener('dragend', () => item.classList.remove('dragging'));
+    item.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const dragging = container.querySelector('.dragging');
+      if (!dragging || dragging === item) return;
+      const rect = item.getBoundingClientRect();
+      const after = (e.clientY - rect.top) > rect.height / 2;
+      if (after) item.after(dragging); else item.before(dragging);
+    });
+    item.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const uuids = [...container.querySelectorAll(itemSel)].map(el => el.dataset.uuid).filter(Boolean);
+      saveSortPref(state.currentGroup, 'custom', uuids).then(render);
+    });
+  });
+}
 let chart = null;
 
 // ---------- 主题 ----------
@@ -114,6 +204,7 @@ function showApp(user, role) {
   state.loggedIn = true;
   state.role = role || 'admin';
   applyRoleGating();
+  loadAllSortPrefs().then(() => requestRender());
 }
 function showLogin() {
   document.getElementById('app').classList.add('hidden');
@@ -481,7 +572,7 @@ function renderPager() {
   if (!bar) return;
   const list = filteredAgents();
   const total = list.length;
-  const ps = state.pageSize;
+  const ps = effectivePageSize();
   const pageCount = ps === 'all' ? 1 : Math.max(1, Math.ceil(total / ps));
   if (state.page > pageCount) state.page = pageCount;
   if (state.page < 1) state.page = 1;
@@ -807,11 +898,13 @@ function renderCard() {
     lastCardMode = 'empty';
     return;
   }
-  if (list.length <= VIRTUAL_THRESHOLD) {
+  // 自定义排序模式下关闭虚拟滚动，整组渲染便于拖拽
+  if (list.length <= VIRTUAL_THRESHOLD || sortIsCustom(state.currentGroup)) {
     let html = '';
     for (const a of list) html += cardHTML(a);
     scroll.innerHTML = `<div class="agents-grid">${html}</div>`;
     bindCardEvents(scroll);
+    if (sortIsCustom(state.currentGroup)) attachDragSort(scroll, '.agent-card');
     lastCardMode = 'full';
     return;
   }
@@ -967,11 +1060,15 @@ function renderList() {
     lastListMode = 'empty';
     return;
   }
-  if (list.length <= VIRTUAL_THRESHOLD) {
+  // 自定义排序模式下关闭虚拟滚动，整组渲染便于拖拽
+  if (list.length <= VIRTUAL_THRESHOLD || sortIsCustom(state.currentGroup)) {
     let rows = '';
     for (const a of list) rows += listRowHTML(a);
     scroll.innerHTML = `<div class="agents-table"><table>${thead}<tbody>${rows}</tbody></table></div>`;
     bindListEvents(scroll);
+    const tbody = scroll.querySelector('tbody');
+    if (tbody && sortIsCustom(state.currentGroup)) attachDragSort(tbody, 'tr');
+    bindSortControls();
     lastListMode = 'full';
     return;
   }

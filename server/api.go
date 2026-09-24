@@ -390,6 +390,44 @@ func listGroupsHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// groupSortAllHandler 返回所有分组的排序偏好（GET，登录即可读）
+func groupSortAllHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m, err := GetAllGroupSort(db)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(m)
+	}
+}
+
+// groupSortSaveHandler 保存某分组的排序偏好（POST，仅管理员）
+// body: {"group":"", "mode":"default|uptime_asc|uptime_desc|custom", "order":["uuid",...]}
+func groupSortSaveHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Group string   `json:"group"`
+			Mode  string   `json:"mode"`
+			Order []string `json:"order"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Order == nil {
+			req.Order = []string{}
+		}
+		if err := SetGroupSort(db, req.Group, req.Mode, req.Order); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}
+}
+
 // requireAgentToken 校验 Agent Token（兼容 Authorization: Bearer <token> 或 ?token= 查询参数）
 func requireAgentToken(cfg *Config, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -819,6 +857,9 @@ func setupRoutes(cfg *Config, db *sql.DB, hub *Hub) http.Handler {
 	// 分组级管理：列表（只读）访客可看；新建/重命名/删除仅管理员
 	r.HandleFunc("/api/groups", requireAdmin(db, createGroupHandler(db, hub))).Methods("POST")
 	r.HandleFunc("/api/groups", requireLogin(db, listGroupsHandler(db))).Methods("GET")
+	// 分组内排序偏好：GET 读取全部（登录即可），POST 保存（仅管理员）
+	r.HandleFunc("/api/group-sort", requireLogin(db, groupSortAllHandler(db))).Methods("GET")
+	r.HandleFunc("/api/group-sort", requireAdmin(db, groupSortSaveHandler(db))).Methods("POST")
 	r.HandleFunc("/api/groups/{name}", requireAdmin(db, renameGroupHandler(db, hub))).Methods("PATCH")
 	r.HandleFunc("/api/groups/{name}", requireAdmin(db, deleteGroupHandler(db, hub))).Methods("DELETE")
 	r.HandleFunc("/api/agents/{uuid}", requireAgentTokenOrAdmin(cfg, db, deleteAgentHandler(db, hub))).Methods("DELETE")

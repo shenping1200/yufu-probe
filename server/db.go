@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -131,6 +132,15 @@ func InitDB(path string) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS kv (
 			k TEXT PRIMARY KEY,
 			v TEXT DEFAULT ''
+		)`,
+		// 分组内排序偏好：custom 模式下的自定义顺序（按分组 + 顺序号）。
+		// 排序模式（default/uptime_asc/uptime_desc/custom）存于 kv 的 sort_mode:<grp>。
+		// grp 为空串 "" 表示「全部」视图；与真实分组共用同一张表。
+		`CREATE TABLE IF NOT EXISTS group_sort (
+			grp TEXT,
+			uuid TEXT,
+			sort_order INTEGER DEFAULT 0,
+			PRIMARY KEY (grp, uuid)
 		)`,
 	}
 	for _, s := range stmts {
@@ -323,6 +333,78 @@ func ListGroups(db *sql.DB) ([]string, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+// ---------- 分组内排序偏好（后端持久化）----------
+
+// GetAllGroupSort 返回所有分组的排序偏好（mode + 自定义顺序）。
+// key 为分组名；空串 "" 表示「全部」视图。仅返回「有过配置」的分组。
+func GetAllGroupSort(db *sql.DB) (map[string]map[string]interface{}, error) {
+	out := map[string]map[string]interface{}{}
+	rows, err := db.Query(`SELECT k, v FROM kv WHERE k LIKE 'sort_mode:%'`)
+	if err != nil {
+		return nil, err
+	}
+	grps := []string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		grp := strings.TrimPrefix(k, "sort_mode:")
+		grps = append(grps, grp)
+		out[grp] = map[string]interface{}{"mode": v, "order": []string{}}
+	}
+	rows.Close()
+	for _, grp := range grps {
+		orows, err := db.Query(`SELECT uuid FROM group_sort WHERE grp=? ORDER BY sort_order ASC`, grp)
+		if err != nil {
+			return nil, err
+		}
+		order := []string{}
+		for orows.Next() {
+			var u string
+			if err := orows.Scan(&u); err != nil {
+				orows.Close()
+				return nil, err
+			}
+			order = append(order, u)
+		}
+		orows.Close()
+		out[grp]["order"] = order
+	}
+	return out, nil
+}
+
+// SetGroupSort 保存某分组的排序偏好：mode 写入 kv，order 全量覆盖 group_sort 表（自带清理旧项）。
+// mode 仅允许：default / uptime_asc / uptime_desc / custom；非法值回退 default。
+func SetGroupSort(db *sql.DB, grp, mode string, order []string) error {
+	valid := map[string]bool{"default": true, "uptime_asc": true, "uptime_desc": true, "custom": true}
+	if !valid[mode] {
+		mode = "default"
+	}
+	if err := SetKV(db, "sort_mode:"+grp, mode); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM group_sort WHERE grp=?`, grp); err != nil {
+		tx.Rollback()
+		return err
+	}
+	for i, u := range order {
+		if u == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO group_sort (grp, uuid, sort_order) VALUES (?, ?, ?)`, grp, u, i); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // GetTrafficHistory 返回某机器各自然月流量历史
