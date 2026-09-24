@@ -34,7 +34,7 @@ func init() {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: nil, // 默认同源校验：跨站 WebSocket 直接拒绝；空 Origin(agent/服务端)放行
 }
 
 // viewerUpgrader 专供浏览器 viewer 连接，比 upgrader 多开了 permessage-deflate 压缩。
@@ -101,6 +101,15 @@ func broadcastAgents(hub *Hub) {
 		return
 	}
 	hub.BroadcastToViewers(payload)
+}
+
+// isSecureCookie 判断 session cookie 是否标记 Secure：HTTPS 直连或经反代以 https 回源时为真，
+// 避免明文 HTTP 下令牌被窃听（#10）。
+func isSecureCookie(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 // clientIP 提取请求来源 IP。部署在反代（Cloudflare Tunnel / nginx）之后时取
@@ -211,6 +220,7 @@ func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 			Value:    token,
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   isSecureCookie(r),
 			SameSite: http.SameSiteLaxMode,
 		})
 		w.Header().Set("Content-Type", "application/json")
@@ -228,6 +238,7 @@ func logoutHandler(db *sql.DB) http.HandlerFunc {
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   isSecureCookie(r),
 			MaxAge:   -1,
 		})
 		w.Header().Set("Content-Type", "application/json")
@@ -685,6 +696,13 @@ func uninstallCommandHandler(cfg *Config) http.HandlerFunc {
 	}
 }
 
+// agent 连接保活参数：服务端每 agentPingPeriod 发一次 ping，agent 自动回 pong；
+// 读超时设为 agentPongPeriod，pong 到达即刷新。超过即判定 agent 死连接（#7）。
+const (
+	agentPingPeriod = 50 * time.Second
+	agentPongWait   = 60 * time.Second
+)
+
 // agentWSHandler 接收客户端上报（需 Token）
 func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -696,9 +714,23 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 		if err != nil {
 			return
 		}
+		// 读超时 + ping/pong：检测 agent 掉电/断网（无 FIN/RST）导致的半开连接，
+		// 否则 hub.findAgent 仍返回死连接，Web SSH/部署会干等到写超时才失败（#7）。
+		conn.SetReadDeadline(time.Now().Add(agentPongWait))
+		conn.SetPongHandler(func(string) error {
+			conn.SetReadDeadline(time.Now().Add(agentPongWait))
+			return nil
+		})
+		pingTicker := time.NewTicker(agentPingPeriod)
+		defer pingTicker.Stop()
 		// agent 连接也需要一个 Client 句柄（终端网关靠它 safeWrite 下发 shell 指令）。
 		// 这里不跑 writePump：agent 方向走带锁的 safeWrite 直写，不用 send 通道。
 		client := &Client{hub: hub, conn: conn, send: make(chan []byte, 8), role: "agent"}
+		go func() {
+			for range pingTicker.C {
+				client.safePing()
+			}
+		}()
 		var agentUUID string
 		defer func() {
 			if agentUUID != "" {
