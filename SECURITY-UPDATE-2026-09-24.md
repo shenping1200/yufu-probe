@@ -45,7 +45,7 @@
 ## 二、部署与回退
 
 ### 已部署
-- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `a9d03b9cde15`（构建于 2026-09-24 10:22）
+- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `f1d6fbb80c9a`（构建于 2026-09-24 ~13:05，含二次热修）
 - 容器 `probe-server` 已重建运行，端口 19527，挂载卷 **`yufu-probe_probe-data`**
 - 验证：登录正常、24 台机器在线、**22 个自定义别名完好**（数据卷未丢）、前端 `?v=47` 已生效
 
@@ -65,7 +65,35 @@
 
 ---
 
-## 三、后续建议（未本次实施）
+## 三、二次热修（v2 复审回归修复，2026-09-24 当晚）
+
+> 触发：第三方交叉验证复审（`D:\EXE\yufu-probe-code-review-v2.md`）对 hardening 改动实测，发现 2 个新引入问题 + 1 个未修项 + 若干小隐患。
+> 分支：`main`（fast-forward 合并 `hotfix-n1n2u1`，`dfd811a..fcb97c5`，5 个提交）
+> 部署状态：VPS 已重建镜像 `f1d6fbb80c9a` 并验证通过
+
+| 项 | 类型 | 问题 | 修复 |
+|---|---|---|---|
+| **N1** | 功能回归（P0） | `main.go` 新加的 `WriteTimeout:60s` 会掐断最长 600s 的批量执行/部署（`/api/agents/exec` 同步阻塞 `wg.Wait()`，超时上限 600s），客户端拿到连接重置而非结果 | **移除 WriteTimeout**（Read/ReadHeader/IdleTimeout 仍防慢速攻击）；正解异步 exec 留作后续 |
+| **N2** | goroutine 泄漏（P0） | `api.go` agent WS 的 ping 保活协程 `for range pingTicker.C` 依赖 `Stop()` 退出，但 `Stop()` 不关 channel，每次 agent 断开泄漏一个 goroutine（规模 2500 台，比 #6 更严重） | 改用 **`done` channel**：handler 退出前 `close(done)` 显式通知，且 `close(done)` 排在 `conn.Close()` 之前 |
+| **U1** | 数据竞争 + 卡顿（P1） | `stress.go` `Stop()` 锁外写 `e.agents=nil`、`Status()` 锁外读 `e.startTime`（实测 DATA RACE）；且 `Stop()` 对压测机逐台 `DeleteAgent`（走 `SetMaxOpenConns(1)` 串行 5000 次空删，停压测卡数秒） | 锁内写 `e.agents=nil`/`e.startTime`；`Status()` 锁内读 `startTime`；**删除冗余 DeleteAgent 循环**（已验证压测机走 `ApplyReportEphemeral` 从不在 `agents` 表落库） |
+
+### 顺手项（v2 报告小隐患，一并清掉）
+| 项 | 修复 |
+|---|---|
+| safePing/safeWrite 无写超时（对端不读则永久持 `writeMu`，卡死该 agent 全部 Web SSH/部署写入） | 写前设 10s 写超时、写后清除（与 `exec.go` 同款模式），不影响同连接其他写入 |
+| XFF 限流绕过（直连暴露时攻击者伪造 XFF 换 IP 绕过登录限流） | 新增 `trusted_proxy` 配置（逗号分隔 IP/CIDR）；**仅当直连来源 IP 落在该列表才信任 X-Forwarded-For**，默认永不信任 |
+| `loginFails` 无界增长（失败 IP 永久残留） | 加 30min TTL，访问时过期即清；锁内重置计数 |
+| 冗余索引（`idx_ssh_lock_uuid` 主键已覆盖、`idx_agents_online` 0/1 低选择性） | 删除两索引（`DROP INDEX IF EXISTS` 兼容线上库） |
+| `ssh_lock` 只增不减（`ResetSSHLock` 写 0 而非删行） | 改为 **DELETE**（成功即删行，与 `GetSSHLock` 缺行语义等价） |
+
+### 回退锚点
+- 源码：`git tag pre-hotfix-n1n2u1-20260924` → `dfd811a`（已打 tag，本地留存；回退即 checkout 该 tag 重编）
+- 镜像：当前 `ghcr.io/shenping1200/yufu-probe:latest` = `f1d6fbb80c9a`（构建于 2026-09-24 ~13:05）
+
+---
+
+## 四、后续建议（更新）
 - 引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。
-- 加 CI 跑 **`go test -race ./server/`** 固化并发正确性。
+- 加 CI 跑 **`go test -race ./server/`**，并加一条**长请求冒烟用例**（断言 exec 超时 > WriteTimeout 不失败）——N1/U1 这类"读代码难发现、一跑就露馅"的回归只能靠它自动抓。
+- 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
 - 评估报告其余 P2 项（调度 ticker stall、Windows Web SSH 等）是否在本项目适用。
