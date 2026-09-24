@@ -10,10 +10,26 @@ import (
 )
 
 var (
-	geoMu    sync.Mutex
-	geoCache = map[string]geoInfo{}
-	geoHTTP  = &http.Client{Timeout: 4 * time.Second}
+	geoMu       sync.Mutex
+	geoCache    = map[string]geoInfo{}
+	geoNegUntil = map[string]time.Time{} // 负缓存：失败冷却，geoNegTTL 内不再重试同一 IP
+	geoInflight = map[string]bool{}     // 在途去重：避免 cache miss 窗口内对同一 IP 并发起请求
+	// geoSem 限制并发地理查询数，防止离线/限流时大量 IP 同时发起请求打挂服务端
+	geoSem = make(chan struct{}, 100)
 )
+
+// geoHTTP 带连接数上限的 HTTP 客户端
+var geoHTTP = &http.Client{
+	Timeout: 4 * time.Second,
+	Transport: &http.Transport{
+		MaxConnsPerHost:     50,
+		MaxIdleConns:        50,
+		IdleConnTimeout:     30 * time.Second,
+		TLSHandshakeTimeout: 4 * time.Second,
+	},
+}
+
+const geoNegTTL = 10 * time.Minute
 
 type geoInfo struct {
 	Display string
@@ -52,22 +68,41 @@ func lookupCountry(db *sql.DB, ip, uuid string) (display, code string) {
 		return "", ""
 	}
 	geoMu.Lock()
-	info, ok := geoCache[ip]
-	geoMu.Unlock()
-	if ok {
+	if info, ok := geoCache[ip]; ok {
+		geoMu.Unlock()
 		return info.Display, info.Code
 	}
-	go func() {
-		info := fetchCountry(ip)
-		if info == nil {
-			return
-		}
-		geoMu.Lock()
-		geoCache[ip] = *info
+	// 负缓存命中：失败冷却期内直接返回，不再重试
+	if t, ok := geoNegUntil[ip]; ok && time.Now().Before(t) {
 		geoMu.Unlock()
-		db.Exec(`UPDATE agents SET country=?, country_code=? WHERE uuid=?`, info.Display, info.Code, uuid)
-		// 查成功后立即回写内存态，避免运行中 country/country_code 停留在 server 启动时的旧值
-		live.SetCountry(uuid, info.Display, info.Code)
+		return "", ""
+	}
+	// 在途去重：已有查询在进行，复用其结果，不重复发请求（避免 goroutine / HTTP 风暴）
+	if geoInflight[ip] {
+		geoMu.Unlock()
+		return "", ""
+	}
+	geoInflight[ip] = true
+	geoMu.Unlock()
+
+	go func() {
+		geoSem <- struct{}{} // 限制并发请求数
+		info := fetchCountry(ip)
+		<-geoSem
+		geoMu.Lock()
+		if info != nil {
+			geoCache[ip] = *info
+			delete(geoNegUntil, ip)
+		} else {
+			geoNegUntil[ip] = time.Now().Add(geoNegTTL) // 失败也写负缓存，阻断持续风暴
+		}
+		delete(geoInflight, ip)
+		geoMu.Unlock()
+		if info != nil {
+			db.Exec(`UPDATE agents SET country=?, country_code=? WHERE uuid=?`, info.Display, info.Code, uuid)
+			// 查成功后立即回写内存态，避免运行中 country/country_code 停留在 server 启动时的旧值
+			live.SetCountry(uuid, info.Display, info.Code)
+		}
 	}()
 	return "", ""
 }
