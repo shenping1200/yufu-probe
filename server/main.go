@@ -133,12 +133,16 @@ func main() {
 		router.ServeHTTP(w, r)
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Listen, cfg.Port)
+	// 注意：此处有意不设置 WriteTimeout。
+	// 批量执行/部署接口（/api/agents/exec）为同步阻塞，最长允许 600 秒（exec.go:469），
+	// 若设 WriteTimeout 会在 60s 处掐断长任务，导致客户端拿到连接被重置而非执行结果（回归 N1）。
+	// 慢速攻击防护已由 ReadHeaderTimeout / ReadTimeout（防慢速读）与 IdleTimeout（防空闲 keepalive）覆盖。
+	// 正解是把 exec 改为异步（提交返回 job id、前端轮询），可顺带解调度 ticker stall，留作后续优化。
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           limited,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	if cfg.TLS.Enabled {
