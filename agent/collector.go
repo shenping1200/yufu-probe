@@ -47,6 +47,7 @@ type collector struct {
 	lastCPUIdle  float64
 	lastRx       uint64
 	lastTx       uint64
+	lastIface    string
 	hasPrev      bool
 	pubIP4       string
 	pubIP6       string
@@ -228,11 +229,12 @@ func defaultRouteIface() string {
 	return ""
 }
 
-// netBytes 读取监控网卡的累计收发字节数
-func (c *collector) netBytes() (uint64, uint64) {
+// netBytes 读取监控网卡的累计收发字节数，返回 (rx, tx, iface)。
+// iface 为实际选中的网卡名；若走「累加所有非虚拟网卡」回退则返回 ""。
+func (c *collector) netBytes() (uint64, uint64, string) {
 	stats, err := gnet.IOCounters(true)
 	if err != nil || len(stats) == 0 {
-		return 0, 0
+		return 0, 0, ""
 	}
 	// 1) 优先使用默认路由网卡（真实对外网卡，如 eth0/ens3）
 	iface := c.iface
@@ -245,7 +247,7 @@ func (c *collector) netBytes() (uint64, uint64) {
 	if iface != "" {
 		for _, s := range stats {
 			if s.Name == iface {
-				return s.BytesRecv, s.BytesSent
+				return s.BytesRecv, s.BytesSent, iface
 			}
 		}
 	}
@@ -258,7 +260,7 @@ func (c *collector) netBytes() (uint64, uint64) {
 		rx += s.BytesRecv
 		tx += s.BytesSent
 	}
-	return rx, tx
+	return rx, tx, ""
 }
 
 // collect 执行一次采集
@@ -270,15 +272,24 @@ func (c *collector) collect(intervalSec float64) (*Snapshot, error) {
 	du, _ := disk.Usage(diskRoot())
 	cpuCount, _ := cpu.Counts(true)
 
-	rx, tx := c.netBytes()
+	rx, tx, iface := c.netBytes()
+	// 网卡切换或计数器回绕时，上一次基线已不可比，丢弃本轮差值，避免下溢成天文数字（#16）
+	if c.hasPrev && iface != "" && c.lastIface != "" && iface != c.lastIface {
+		c.hasPrev = false
+	}
 	var rxRate, txRate, rxDelta, txDelta float64
 	if c.hasPrev {
-		rxDelta = float64(rx - c.lastRx)
-		txDelta = float64(tx - c.lastTx)
+		if rx >= c.lastRx {
+			rxDelta = float64(rx - c.lastRx)
+		}
+		if tx >= c.lastTx {
+			txDelta = float64(tx - c.lastTx)
+		}
 		rxRate = rxDelta / intervalSec
 		txRate = txDelta / intervalSec
 	}
 	c.lastRx, c.lastTx = rx, tx
+	c.lastIface = iface
 	c.hasPrev = true
 
 	return &Snapshot{
