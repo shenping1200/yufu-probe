@@ -45,9 +45,9 @@
 ## 二、部署与回退
 
 ### 已部署
-- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `f1d6fbb80c9a`（构建于 2026-09-24 ~13:05，含二次热修）
+- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `15d118cef089`（构建于 2026-09-25 ~00:00，含二次热修 + 拖拽手柄回归修复）
 - 容器 `probe-server` 已重建运行，端口 19527，挂载卷 **`yufu-probe_probe-data`**
-- 验证：登录正常、24 台机器在线、**22 个自定义别名完好**（数据卷未丢）、前端 `?v=47` 已生效
+- 验证：登录正常、25 台机器在线、**23 个自定义别名完好**（数据卷未丢）、前端 `?v=48` 已生效
 
 ### 回退方式（双锚点）
 - **源码**：`git tag rollback-pre-hardening-20260924` → `9f754cd`（已打 tag，未推送，本地留存）
@@ -92,7 +92,36 @@
 
 ---
 
-## 四、后续建议（更新）
+## 四、拖拽排序回归修复（2026-09-24 深夜）
+
+### 问题
+新增拖拽排序后，用户反馈**无法再用鼠标选中复制服务器 IP / 别名**。
+
+### 根因（读源码定位）
+`attachDragSort()` 给每个卡片/行无差别设 `draggable="true"`（原生 HTML5 拖拽）。
+元素一旦 `draggable=true`，鼠标在其内部按下会优先触发**拖拽手势**而非**文本选择**，
+导致卡片/行内的纯文本（IP、别名）无法选中复制。CSS 里的 `user-select:none` 仅在分组
+标签按钮上，不是元凶。
+
+### 修复
+采用**独立拖拽手柄**方案（零依赖、不改后端）：
+- `attachDragSort()`：默认 `item.setAttribute('draggable','false')`，仅在 `.drag-handle`
+  元素的 `mousedown` 时临时置 `true`、`mouseup/mouseleave/dragend` 时复位 `false`。
+  这样卡片/行默认可正常选中文本，只有抓住手柄（⠿）才发起拖拽。
+- `cardInner()` / `listRowHTML()`：在卡片头部 / 列表首格加入 `<span class="drag-handle" title="拖拽排序">⠿</span>`。
+- `style.css`：新增 `.drag-handle` 样式（`cursor:grab/grabbing`、`user-select:none`）。
+- `index.html`：升缓存版本号 `style.css?v=27`、`app.js?v=48`（前端 Go embed，必须重建镜像）。
+
+### 涉及文件
+`server/static/app.js`、`server/static/style.css`、`server/static/index.html`
+
+### 已部署 / 回退锚点
+- 已部署镜像：`15d118cef089`（见「二、部署与回退」），`?v=48` 已生效。
+- 源码回退：`git tag pre-fix-drag-text-select-20260924` → `e852b16`（已推送 GitHub）。
+
+---
+
+## 五、后续建议（更新）
 - 引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。
 - 加 CI 跑 **`go test -race ./server/`**，并加一条**长请求冒烟用例**（断言 exec 超时 > WriteTimeout 不失败）——N1/U1 这类"读代码难发现、一跑就露馅"的回归只能靠它自动抓。
 - 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
