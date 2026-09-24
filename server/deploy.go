@@ -553,7 +553,7 @@ func deployRulesCreateHandler(db *sql.DB) http.HandlerFunc {
 			Timeout:      req.Timeout,
 		}
 		if err := CreateDeployRule(db, rule, req.Password); err != nil {
-			http.Error(w, "internal error: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
@@ -610,7 +610,7 @@ func deployRulesUpdateHandler(db *sql.DB) http.HandlerFunc {
 			pw = &p
 		}
 		if err := UpdateDeployRule(db, id, &rule, pw); err != nil {
-			http.Error(w, "internal error: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
