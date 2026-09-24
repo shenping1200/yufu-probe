@@ -148,6 +148,21 @@ func InitDB(path string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	// 关键查询索引（幂等，已存在则静默忽略）。agents 表几百~上千行时，
+	// 按 group_name / online / last_seen 过滤与排序从全表扫描降到索引命中。
+	idxStmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_agents_group ON agents(group_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_agents_online ON agents(online)`,
+		`CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen)`,
+		`CREATE INDEX IF NOT EXISTS idx_agents_created ON agents(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_visitor_expires ON visitor_links(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_traffic_ym ON traffic_monthly(year_month)`,
+		`CREATE INDEX IF NOT EXISTS idx_ssh_lock_uuid ON ssh_lock(uuid)`,
+	}
+	for _, s := range idxStmts {
+		_ = db.Exec(s)
+	}
 	// 兼容旧库：补加后续新增列（已存在则忽略错误）
 	db.Exec(`ALTER TABLE agents ADD COLUMN cpu_count INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE agents ADD COLUMN country TEXT DEFAULT ''`)
