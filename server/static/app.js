@@ -821,10 +821,10 @@ function cardInner(a) {
   const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
   const groupBadge = a.group ? `<span class="card-group" title="分组">🏷️ ${escapeHtml(a.group)}</span>` : '';
   return `
-    <div class="card-header"><label class="sel-only card-chk-wrap"><input class="sel-chk" type="checkbox" data-uuid="${a.uuid}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label>
+    <div class="card-header"><label class="sel-only card-chk-wrap"><input class="sel-chk" type="checkbox" data-uuid="${escapeHtml(a.uuid)}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label>
       <div class="card-title">
-        <input class="card-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名">
-        <button class="btn-edit" data-uuid="${a.uuid}" title="编辑名称/备注/分组/到期">✎</button><button class="btn-del del-only" data-uuid="${a.uuid}" title="删除该客户端">🗑</button>${a.online ? `<button class="btn-ssh" data-uuid="${a.uuid}" title="Web SSH 终端">SSH</button>` : ''}
+        <input class="card-name" data-uuid="${escapeHtml(a.uuid)}" value="${escapeHtml(alias)}" title="点击编辑别名">
+        <button class="btn-edit" data-uuid="${escapeHtml(a.uuid)}" title="编辑名称/备注/分组/到期">✎</button><button class="btn-del del-only" data-uuid="${escapeHtml(a.uuid)}" title="删除该客户端">🗑</button>${a.online ? `<button class="btn-ssh" data-uuid="${escapeHtml(a.uuid)}" title="Web SSH 终端">SSH</button>` : ''}
         <div class="card-status">
           <span class="dot ${a.online ? 'on' : 'off'}"></span>
           <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span>
@@ -877,10 +877,10 @@ function cardInner(a) {
     </div>`;
 }
 function cardHTML(a) {
-  return `<div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${a.uuid}">${cardInner(a)}</div>`;
+  return `<div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${escapeHtml(a.uuid)}">${cardInner(a)}</div>`;
 }
 function cardHTMLAt(a, style) {
-  return `<div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${a.uuid}" style="${style}">${cardInner(a)}</div>`;
+  return `<div class="agent-card ${a.online ? '' : 'offline'}" data-uuid="${escapeHtml(a.uuid)}" style="${style}">${cardInner(a)}</div>`;
 }
 
 // 卡片视图：单卡固定高 400px + 间距 20px。超过阈值时按可视窗口绝对放置卡片（虚拟滚动）
@@ -1022,10 +1022,10 @@ function listRowHTML(a) {
   const cd = fmtCountdown(a.expire_at);
   const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
   return `
-    <tr data-uuid="${a.uuid}">
-      <td class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" data-uuid="${a.uuid}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label></td>
+    <tr data-uuid="${escapeHtml(a.uuid)}">
+      <td class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" data-uuid="${escapeHtml(a.uuid)}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label></td>
       <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
-      <td><input class="list-name" data-uuid="${a.uuid}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
+      <td><input class="list-name" data-uuid="${escapeHtml(a.uuid)}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
       <td><span class="flag">${flagImg}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br>${ipBlockHTML(a)}</td>
       <td>${escapeHtml(fmtConfig(a))}</td>
       <td>${fmtUptime(a.uptime)}${cdHtml}</td>
@@ -1036,7 +1036,7 @@ function listRowHTML(a) {
       </td>
       <td><span class="down">↓${fmtRate(a.rx_rate)}</span><br><span class="up">↑${fmtRate(a.tx_rate)}</span></td>
       <td><span class="down">${fmtBytes(a.rx_month)}</span><br><span class="up">${fmtBytes(a.tx_month)}</span></td>
-      <td><button class="btn-chart" data-uuid="${a.uuid}">流量</button> <button class="btn-edit" data-uuid="${a.uuid}">编辑</button>${a.online ? ` <button class="btn-ssh" data-uuid="${a.uuid}">SSH</button>` : ''} <button class="btn-del del-only" data-uuid="${a.uuid}" title="删除该客户端">删除</button></td>
+      <td><button class="btn-chart" data-uuid="${escapeHtml(a.uuid)}">流量</button> <button class="btn-edit" data-uuid="${escapeHtml(a.uuid)}">编辑</button>${a.online ? ` <button class="btn-ssh" data-uuid="${escapeHtml(a.uuid)}">SSH</button>` : ''} <button class="btn-del del-only" data-uuid="${escapeHtml(a.uuid)}" title="删除该客户端">删除</button></td>
     </tr>
   `;
 }
