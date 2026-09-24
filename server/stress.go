@@ -615,13 +615,18 @@ func (e *StressEngine) Stop() error {
 	if stop != nil {
 		stop()
 	}
+	// 压测机走 ApplyReportEphemeral，数据只活内存、从不在 agents 表落库（见 state.go），
+	// 因此只需从内存 live 移除，无需逐台 DeleteAgent——后者会在 SetMaxOpenConns(1) 上产生
+	// 数千次串行空删除，导致停止压测时面板卡顿数秒（#U1）。
 	for i := range agents {
 		live.Remove(agents[i].uuid)
-		if db != nil {
-			DeleteAgent(db, agents[i].uuid)
-		}
 	}
+	// 锁内清空引擎状态，避免与 Status 的并发读产生数据竞争（#U1 锁外写）
+	e.mu.Lock()
 	e.agents = nil
+	e.startTime = time.Time{}
+	e.mu.Unlock()
+
 	// 仅当分组内已无任何成员（即没有真实机器）时才删除分组
 	remaining := false
 	for _, a := range live.Snapshot() {
@@ -648,6 +653,7 @@ func (e *StressEngine) Status() map[string]interface{} {
 	running := e.running
 	group := e.group
 	total := len(e.agents)
+	startTime := e.startTime
 	e.mu.Unlock()
 	online := 0
 	if running {
@@ -659,7 +665,7 @@ func (e *StressEngine) Status() map[string]interface{} {
 	}
 	elapsed := 0
 	if running {
-		elapsed = int(time.Since(e.startTime).Seconds())
+		elapsed = int(time.Since(startTime).Seconds())
 	}
 	return map[string]interface{}{
 		"running":    running,
