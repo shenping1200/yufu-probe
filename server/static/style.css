@@ -227,6 +227,14 @@ header h1 { margin: 0; font-size: 20px; font-weight: 700; }
 }
 .agents-grid .agent-card[draggable="true"] { cursor: grab; }
 .agents-grid .agent-card[draggable="true"]:hover { outline: 1px solid var(--accent, #58a6ff); }
+/* 拖拽手柄：仅此处可发起拖拽；其余区域默认可选中文本（修复 draggable 吞掉复制的问题） */
+.drag-handle {
+  cursor: grab; color: var(--text-2); user-select: none;
+  font-size: 14px; line-height: 1; padding: 0 4px; align-self: center;
+  display: inline-flex; align-items: center;
+}
+.drag-handle:hover { color: var(--accent, #58a6ff); }
+.drag-handle:active { cursor: grabbing; }
 .agents-table .list-name {
   font-size: 13px; font-weight: 600; color: var(--text);
   background: transparent; border: 1px solid transparent; border-radius: 6px;

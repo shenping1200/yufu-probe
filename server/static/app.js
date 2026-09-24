@@ -94,14 +94,22 @@ let dragActive = false;
 // 拖拽排序：container 内 itemSel 元素设为可拖拽，拖放后按 DOM 顺序保存为 custom 顺序
 function attachDragSort(container, itemSel) {
   container.querySelectorAll(itemSel).forEach(item => {
-    item.setAttribute('draggable', 'true');
+    // 默认不可拖拽：保证卡片/行内文本（IP、别名等）可被鼠标正常选中复制。
+    // 仅当在 .drag-handle 上按下时才临时开启 draggable，避免原生 DnD 劫持文本选择。
+    item.setAttribute('draggable', 'false');
+    const handle = item.querySelector('.drag-handle');
+    if (handle) {
+      handle.addEventListener('mousedown', () => item.setAttribute('draggable', 'true'));
+      handle.addEventListener('mouseup', () => item.setAttribute('draggable', 'false'));
+      handle.addEventListener('mouseleave', () => item.setAttribute('draggable', 'false'));
+    }
     item.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', item.dataset.uuid);
       dragActive = true;
       setTimeout(() => item.classList.add('dragging'), 0);
     });
-    item.addEventListener('dragend', () => { item.classList.remove('dragging'); dragActive = false; });
+    item.addEventListener('dragend', () => { item.classList.remove('dragging'); item.setAttribute('draggable', 'false'); dragActive = false; });
     item.addEventListener('dragover', (e) => {
       e.preventDefault();
       const dragging = container.querySelector('.dragging');
@@ -821,7 +829,7 @@ function cardInner(a) {
   const cdBadge = cd ? `<span class="cd-badge ${cd.cls}" title="VPS 到期">📅 ${cd.text}</span>` : '';
   const groupBadge = a.group ? `<span class="card-group" title="分组">🏷️ ${escapeHtml(a.group)}</span>` : '';
   return `
-    <div class="card-header"><label class="sel-only card-chk-wrap"><input class="sel-chk" type="checkbox" data-uuid="${escapeHtml(a.uuid)}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label>
+    <div class="card-header"><span class="drag-handle" title="拖拽排序">⠿</span><label class="sel-only card-chk-wrap"><input class="sel-chk" type="checkbox" data-uuid="${escapeHtml(a.uuid)}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label>
       <div class="card-title">
         <input class="card-name" data-uuid="${escapeHtml(a.uuid)}" value="${escapeHtml(alias)}" title="点击编辑别名">
         <button class="btn-edit" data-uuid="${escapeHtml(a.uuid)}" title="编辑名称/备注/分组/到期">✎</button><button class="btn-del del-only" data-uuid="${escapeHtml(a.uuid)}" title="删除该客户端">🗑</button>${a.online ? `<button class="btn-ssh" data-uuid="${escapeHtml(a.uuid)}" title="Web SSH 终端">SSH</button>` : ''}
@@ -1023,7 +1031,7 @@ function listRowHTML(a) {
   const cdHtml = cd ? `<div class="cd-text ${cd.cls}" title="VPS 到期">📅 ${cd.text}</div>` : '';
   return `
     <tr data-uuid="${escapeHtml(a.uuid)}">
-      <td class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" data-uuid="${escapeHtml(a.uuid)}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label></td>
+      <td class="sel-td"><span class="drag-handle" title="拖拽排序">⠿</span><label class="sel-only"><input class="sel-chk" type="checkbox" data-uuid="${escapeHtml(a.uuid)}" ${state.selected.has(a.uuid)?'checked':''} onclick="event.stopPropagation()"></label></td>
       <td><span class="dot ${a.online ? 'on' : 'off'}"></span> <span class="status-text ${a.online ? 'on' : 'off'}">${a.online ? '在线' : '离线'}</span></td>
       <td><input class="list-name" data-uuid="${escapeHtml(a.uuid)}" value="${escapeHtml(alias)}" title="点击编辑别名"></td>
       <td><span class="flag">${flagImg}</span>${escapeHtml(loc)} ${code ? '(' + escapeHtml(code) + ')' : ''}<br>${ipBlockHTML(a)}</td>
