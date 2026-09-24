@@ -97,6 +97,7 @@ func notifyAgentGone(agentUUID string) {
 func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		targetUUID := mux.Vars(r)["uuid"]
+		ip := clientIP(r)
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -129,7 +130,7 @@ func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 		}
 
 		// 锁定检查（落盘持久化，24h 自动解）
-		_, lockedUntil, _ := GetSSHLock(db, targetUUID)
+		_, lockedUntil, _ := GetSSHLock(db, targetUUID, ip)
 		now := time.Now().Unix()
 		if lockedUntil > now {
 			remain := lockedUntil - now
@@ -143,12 +144,12 @@ func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			eff = cfg.Admin.Password
 		}
 		if auth.Password != eff {
-			locked, until, _ := RecordSSHFailure(db, targetUUID)
+			locked, until, _ := RecordSSHFailure(db, targetUUID, ip)
 			if locked {
 				client.writeJSON(map[string]string{"action": "error", "message": fmt.Sprintf("错误次数过多，SSH 已锁定 24 小时（剩余 %d 秒）", until-now)})
 			} else {
 				left := 4 // 本次失败前已失败次数固定为 4 即触发锁定；这里给一个保守提示
-				fail, _, _ := GetSSHLock(db, targetUUID)
+				fail, _, _ := GetSSHLock(db, targetUUID, ip)
 				left = 5 - fail
 				if left < 0 {
 					left = 0
@@ -158,8 +159,9 @@ func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			return
 		}
 
-		// 成功：清零失败计数
-		ResetSSHLock(db, targetUUID)
+		// 成功：清零失败计数 + 审计
+		ResetSSHLock(db, targetUUID, ip)
+		log.Printf("[audit] ssh 鉴权成功：来源 %s 机器 %s", ip, targetUUID)
 
 		// 生成会话 id，登记桥接
 		sid := uuid.NewString()

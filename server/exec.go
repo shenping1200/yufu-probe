@@ -475,7 +475,7 @@ func execHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 
 		// 复用 Web SSH 的密码校验/锁定机制（批量用固定 key，因为密码是全局的、不绑定单台）
 		const lockKey = "batch-exec"
-		if _, until, _ := GetSSHLock(db, lockKey); until > time.Now().Unix() {
+		if _, until, _ := GetSSHLock(db, lockKey, ""); until > time.Now().Unix() {
 			http.Error(w, "SSH 已锁定，请稍后重试", http.StatusForbidden)
 			return
 		}
@@ -484,14 +484,14 @@ func execHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			eff = cfg.Admin.Password
 		}
 		if req.Password != eff {
-			if locked, _, _ := RecordSSHFailure(db, lockKey); locked {
+			if locked, _, _ := RecordSSHFailure(db, lockKey, ""); locked {
 				http.Error(w, "错误次数过多，已锁定 24 小时", http.StatusForbidden)
 				return
 			}
 			http.Error(w, "密码错误", http.StatusUnauthorized)
 			return
 		}
-		_ = ResetSSHLock(db, lockKey)
+		_ = ResetSSHLock(db, lockKey, "")
 
 		log.Printf("[exec] 批量命令 start: uuids=%d timeout=%ds concurrency=%d cmd_len=%d",
 			len(req.UUIDs), req.Timeout, req.Concurrency, len(req.Command))

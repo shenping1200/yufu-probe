@@ -429,10 +429,12 @@ func GetTrafficHistory(db *sql.DB, uuid string) ([]MonthlyTraffic, error) {
 // 规则：某客户端 SSH 密码连续错误 5 次 → 锁定 24 小时；24h 后自动解锁；
 // 密码正确时清零失败计数。锁定状态存 ssh_lock 表，服务端重启不丢。
 
-// GetSSHLock 读取某 uuid 的 SSH 失败计数与锁定截止时间（Unix 秒）。
+// GetSSHLock 读取某 (uuid, 来源IP) 的 SSH 失败计数与锁定截止时间（Unix 秒）。
+// 锁定维度为「目标机器 + 爆破来源 IP」复合键，避免攻击者靠轮换 uuid 重置尝试次数。
 // 无记录时返回 (0,0,nil)，表示从未失败、未锁定。
-func GetSSHLock(db *sql.DB, uuid string) (failCount int, lockedUntil int64, err error) {
-	err = db.QueryRow(`SELECT fail_count, locked_until FROM ssh_lock WHERE uuid=?`, uuid).
+func GetSSHLock(db *sql.DB, uuid, ip string) (failCount int, lockedUntil int64, err error) {
+	key := uuid + "|" + ip
+	err = db.QueryRow(`SELECT fail_count, locked_until FROM ssh_lock WHERE uuid=?`, key).
 		Scan(&failCount, &lockedUntil)
 	if err == sql.ErrNoRows {
 		return 0, 0, nil
@@ -442,9 +444,10 @@ func GetSSHLock(db *sql.DB, uuid string) (failCount int, lockedUntil int64, err 
 
 // RecordSSHFailure 记录一次密码失败，返回是否因此被锁定以及锁定截止时间。
 // 失败达到 5 次即锁定 24 小时（locked_until = now+24h）。
-func RecordSSHFailure(db *sql.DB, uuid string) (locked bool, lockedUntil int64, err error) {
+func RecordSSHFailure(db *sql.DB, uuid, ip string) (locked bool, lockedUntil int64, err error) {
+	key := uuid + "|" + ip
 	now := time.Now().Unix()
-	fail, until, _ := GetSSHLock(db, uuid)
+	fail, until, _ := GetSSHLock(db, uuid, ip)
 	fail++
 	if fail >= 5 {
 		lockedUntil = now + 24*3600
@@ -454,20 +457,21 @@ func RecordSSHFailure(db *sql.DB, uuid string) (locked bool, lockedUntil int64, 
 	}
 	_, err = db.Exec(`INSERT INTO ssh_lock (uuid, fail_count, locked_until) VALUES (?,?,?)
 		ON CONFLICT(uuid) DO UPDATE SET fail_count=excluded.fail_count, locked_until=excluded.locked_until`,
-		uuid, fail, lockedUntil)
+		key, fail, lockedUntil)
 	return
 }
 
 // ResetSSHLock 密码正确时调用：清零失败计数与锁定时间。
-func ResetSSHLock(db *sql.DB, uuid string) error {
+func ResetSSHLock(db *sql.DB, uuid, ip string) error {
+	key := uuid + "|" + ip
 	_, err := db.Exec(`INSERT INTO ssh_lock (uuid, fail_count, locked_until) VALUES (?,0,0)
-		ON CONFLICT(uuid) DO UPDATE SET fail_count=0, locked_until=0`, uuid)
+		ON CONFLICT(uuid) DO UPDATE SET fail_count=0, locked_until=0`, key)
 	return err
 }
 
-// UnlockSSH 手动解锁单台客户端（管理员介入）。
+// UnlockSSH 手动解锁单台客户端（管理员介入）。按机器 uuid 解除其名下所有来源 IP 的锁。
 func UnlockSSH(db *sql.DB, uuid string) error {
-	_, err := db.Exec(`DELETE FROM ssh_lock WHERE uuid=?`, uuid)
+	_, err := db.Exec(`DELETE FROM ssh_lock WHERE uuid = ? OR uuid LIKE ?`, uuid, uuid+"|%")
 	return err
 }
 
