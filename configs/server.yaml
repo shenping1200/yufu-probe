@@ -10,6 +10,12 @@ agent_token: "change-me-agent-token"
 admin:
   username: admin
   password: admin
+# Web SSH / 批量执行 / 自动部署连接被管机器的共享密码。
+#   · 留空时回退到 admin.password（明文部署可用）；
+#   · 但若 admin.password 已迁移为 bcrypt 哈希，则【必须】在此显式设置明文 ssh_password，
+#     否则 Web SSH / 批量 / 自动部署会把哈希当明文比对而全部失败（甚至会触发 24h 锁定，见 v5 复审 V5-1）。
+#   · 此密码仅用于服务端与被管机器之间的 SSH 鉴权比对，不会被下发到目标机（规则里用的是 AES-GCM 解密后的密码）。
+ssh_password: ""
 # SQLite 数据库路径（相对工作目录 /app）；数据目录已挂载为持久卷
 db_path: data/probe.db
 

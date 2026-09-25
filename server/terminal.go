@@ -138,11 +138,9 @@ func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			return
 		}
 
-		// 密码校验（空 ssh_password 时回退到管理员密码）
-		eff := cfg.SSHPassword
-		if eff == "" {
-			eff = cfg.Admin.Password
-		}
+		// 密码校验（统一走 effectiveSSHPassword：显式 ssh_password 优先；
+		// admin.password 为 bcrypt 哈希时不再当作明文回退，避免 V5-1 故障）
+		eff := effectiveSSHPassword(cfg)
 		if auth.Password != eff {
 			locked, until, _ := RecordSSHFailure(db, targetUUID, ip)
 			if locked {

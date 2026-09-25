@@ -266,14 +266,20 @@ func pendingDeployUUIDs(db *sql.DB, sources []string) ([]string, error) {
 	return out, nil
 }
 
-// effectiveSSHPassword 解析出实际用于 Web SSH 鉴权的密码：显式设置的 ssh_password 优先，
-// 否则回退到管理员密码（与 terminal.go / exec.go 保持一致）。
+// effectiveSSHPassword 解析出实际用于 Web SSH / 批量执行 / 自动部署鉴权的密码：
+// 显式设置的 ssh_password 优先；否则回退到管理员密码（与 terminal.go / exec.go 保持一致）。
 // 自动部署复用同一套 Web SSH 通道，因此规则里保存的密码也必须与这里一致才算鉴权通过。
+// ⚠️ V5-1 修复：admin.password 若已是 bcrypt 哈希，绝不能当作 SSH 明文口令使用——
+// 否则 Web SSH / 批量执行 / 自动部署会把哈希当明文比对，全部失败，且 Web SSH/批量会触发 24h 锁定。
+// 此时返回空串，三处调用点走「密码错误」分支；配合 main.go 启动告警，运维知道该去显式配 ssh_password。
 func effectiveSSHPassword(cfg *Config) string {
-	if cfg != nil && cfg.SSHPassword != "" {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.SSHPassword != "" {
 		return cfg.SSHPassword
 	}
-	if cfg != nil && cfg.Admin.Password != "" {
+	if cfg.Admin.Password != "" && !isBcryptHash(cfg.Admin.Password) {
 		return cfg.Admin.Password
 	}
 	return ""

@@ -473,10 +473,7 @@ func execHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			http.Error(w, "SSH 已锁定，请稍后重试", http.StatusForbidden)
 			return
 		}
-		eff := cfg.SSHPassword
-		if eff == "" {
-			eff = cfg.Admin.Password
-		}
+		eff := effectiveSSHPassword(cfg)
 		if req.Password != eff {
 			if locked, _, _ := RecordSSHFailure(db, lockKey, ""); locked {
 				http.Error(w, "错误次数过多，已锁定 24 小时", http.StatusForbidden)
