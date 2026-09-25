@@ -297,8 +297,42 @@
 
 ---
 
-## 九、后续建议（更新）
+## 九、v7 复审修复（V7-1 未配置 trusted_proxy 多层反代 + CI，2026-09-25）
+
+> 触发：第三方交叉验证复审（`D:\EXE\yufu-probe-code-review-v7.md`）对照源码复核 v6 增量（`b15cdc0..38ee814`），结论：v6 的 V6-1/V4-2/V6-2/V6-3/V4-7 **全部修对、无新回归**（第一轮七轮里首次零新回归）。仅剩一个实质性残留 **V7-1**：`rightmostValidXFF` 只在显式配置 `trusted_proxy` 时才跳过可信反代自身 IP。
+> 分支：`main`（fast-forward 合并 `fix-v7-review`，`38ee814..600b9c2`，1 个提交）
+> 提交：`600b9c2` — fix(v7): rightmostValidXFF 未配置 trusted_proxy 时也跳过私网/回环段（V7-1）+ 新增 clientip 单测 + 新增 CI 工作流
+> 部署状态：VPS 已重建镜像 `a8bd14f82d74` 并验证通过
+
+### 🟠 V7-1（两层及以上反代 + 未配置 trusted_proxy → 取到反代自身内网 IP，P1 self-DoS 变体）
+- **根因（如实）**：v6 的 `rightmostValidXFF` 只在 `len(trusted) > 0` 时跳过可信段；未配置 `trusted_proxy`（默认部署，也是模板推荐值）时**不跳过任何项**，两层反代的最右项就是内层反代自己的私网 IP → 所有请求共用该私网 IP 一个限流桶 → 5 次失败锁死管理员 15 分钟（与 P1 等价，但触发条件更窄：需两层及以上反代）。
+- **对 675 现状零影响**：`rightmostValidXFF` 仅在 `trustXFF` 为真（直连来源是私网/回环，即前面真架了反代）时才被调用；675 直连暴露、公网来源 → `trustXFF` 为假 → 该函数根本不执行，V7-1 在 675 不触发。源码已核（api.go:144/192）。
+- **修复（~6 行）**：未配置 `trusted_proxy` 时，用私网/回环作启发式跳过——反代自身回源地址几乎必然为私网/回环，据此跳过即可取到真实客户端 IP；全部被跳过（XFF 全私网/回环）时返回空串，调用方回落 RemoteAddr，不取伪造值。
+- **配套**：新增 `server/clientip_test.go` 纯函数单测，覆盖 V7-1 两层反代未配置 / V4-2 配置不匹配 / V6-3 IPv4-mapped 规范化 / 全私网回落等场景，直接锁住 V7-1 修复。
+
+### 📌 CI 自动化（七轮里所有真 bug 均靠 race 检测 + 实测抓出，读代码抓不到）
+- **新增** `.github/workflows/ci.yml`：push/pr 到 main 时自动跑 `go build ./...` + `go vet ./...` + `go test -race ./server/` + `gofmt`（仅查本次改动文件，历史 10 个未格式化文件见 V4-5 backlog，不阻断）。
+- 价值：以后每次提交自动发现回归，不再依赖人工交叉复审。
+
+### 涉及文件
+`server/api.go`（`rightmostValidXFF` 未配置 trusted 时按私网/回环跳过 + 注释同步）、`server/clientip_test.go`（新增单测）、`.github/workflows/ci.yml`（新增 CI）
+
+### 验证（VPS 实测，全绿）
+- **编译 gate**：`docker build -f Dockerfile.server` → `BUILD_EXIT=0`。
+- **部署**：重建镜像 `a8bd14f82d74`，容器重建运行，运行容器镜像 ID = `sha256:a8bd14f82d74` 确认；**日志无 panic**；24 个 agent 经 WS 回连"Web SSH 可用"（无回归）。
+- **V7-1 就位**：`api.go` 的 `else if ip.IsLoopback() || ip.IsPrivate()` 1 处（grep 确认）；`clientip_test.go` 含 `TestClientIP` + `TestRightmostValidXFF`（grep 确认 2 处）。
+- **HTTP smoke**：首页 200、错误口令 401；`hash-password` stdin → `$2a$10$...` RC=0。
+- **注**：V7-1 在 675 直连部署不触发（见上"对 675 现状零影响"）；CI 的 `go test -race ./server/` 含 V7-1 单测，GitHub 推送后自动跑。
+
+### 回退锚点
+- 源码：`git tag pre-fix-v7-20260925` → `38ee814`（**已推送 GitHub**，回退即 checkout 该 tag 重编）
+- 镜像：`yufu-probe:rollback-pre-v7-20260925` = `7915deb8cfcb`（已在 VPS 保留；回退：`docker tag yufu-probe:rollback-pre-v7-20260925 ghcr.io/shenping1200/yufu-probe:latest && cd /opt/yufu-probe && docker compose up -d --pull never`）
+
+---
+
+## 十、后续建议（更新）
 - ~~引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。~~ **已完成（见「六、bcrypt 落地」）；生产 `admin.password` 仍明文，待运维执行 `hash-password` 迁移。**
-- 加 CI 跑 **`go test -race ./server/`**，并加一条**长请求冒烟用例**（断言 exec 超时 > WriteTimeout 不失败）——N1/U1 这类"读代码难发现、一跑就露馅"的回归只能靠它自动抓。
+- ✅ **CI 已落地**（见「九」）：`go test -race ./server/` + `go vet` + `gofmt` + 构建，push/pr 自动跑；长请求冒烟用例（断言 exec 超时 > WriteTimeout 不失败）留作后续补充——N1/U1 这类"读代码难发现、一跑就露馅"的回归主要靠它自动抓。
+- 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
 - 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
 - 评估报告其余 P2 项（调度 ticker stall、Windows Web SSH 等）是否在本项目适用。
