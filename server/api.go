@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/bcrypt"
 )
 
 //go:embed static
@@ -279,7 +280,7 @@ func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 			return
 		}
 		userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(cfg.Admin.Username)) == 1
-		passOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(cfg.Admin.Password)) == 1
+		passOK := checkAdminPassword(req.Password, cfg.Admin.Password)
 		if !userOK || !passOK {
 			locked, remain := loginRegisterFailure(ip)
 			if locked {
@@ -307,6 +308,23 @@ func loginHandler(cfg *Config, db *sql.DB) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
+}
+
+// isBcryptHash 判断存储的口令是否为 bcrypt 哈希（以 $2a$ / $2b$ / $2y$ 开头）。
+// bcrypt 哈希自带算法/版本/成本/盐，无需额外字段标记。
+func isBcryptHash(s string) bool {
+	return strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$")
+}
+
+// checkAdminPassword 兼容比对：存储值为 bcrypt 哈希时走 bcrypt 常数时间比对；
+// 否则走原 subtle.ConstantTimeCompare 明文比较（向后兼容未迁移的旧部署）。
+// 这样老部署（明文 admin.password）无需停机即可继续登录，运维随后把口令替换成
+// `yufu-server hash-password <口令>` 生成的哈希即可无缝切换到哈希校验（见 main.go）。
+func checkAdminPassword(submitted, stored string) bool {
+	if isBcryptHash(stored) {
+		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(submitted)) == nil
+	}
+	return subtle.ConstantTimeCompare([]byte(submitted), []byte(stored)) == 1
 }
 
 func logoutHandler(db *sql.DB) http.HandlerFunc {

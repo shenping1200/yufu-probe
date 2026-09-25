@@ -34,6 +34,8 @@ type TLSConfig struct {
 
 type AdminConfig struct {
 	Username string `yaml:"username"`
+	// Password 可为明文或 bcrypt 哈希（以 $2a$/$2b$/$2y$ 开头）。建议使用哈希存储，避免明文落盘；
+	// 旧部署用明文仍兼容（checkAdminPassword 自动识别）。生成方式：yufu-server hash-password <口令>。
 	Password string `yaml:"password"`
 }
 

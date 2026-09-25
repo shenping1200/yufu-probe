@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // resolveConfigPath 解析配置文件路径：优先命令行 -config <path> 或 -config=<path>，
@@ -54,6 +56,21 @@ func main() {
 		return
 	}
 
+	// 子命令：yufu-server hash-password <明文> 生成 bcrypt 哈希，
+	// 供运维替换 configs/server.yaml 的 admin.password（迁移到哈希校验，避免明文落盘）。
+	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "用法: yufu-server hash-password <明文口令>")
+			os.Exit(2)
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(os.Args[2]), bcrypt.DefaultCost)
+		if err != nil {
+			log.Fatalf("生成 bcrypt 哈希失败: %v", err)
+		}
+		fmt.Println(string(hash))
+		return
+	}
+
 	cfgPath := resolveConfigPath()
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -66,6 +83,10 @@ func main() {
 	}
 	if cfg.AgentToken == "change-me-agent-token" {
 		log.Printf("[SECURITY] 检测到默认 agent_token change-me-agent-token，请立即修改，否则任何人可用它注册机器！")
+	}
+	// 安全自检：管理员口令为明文（非 bcrypt 哈希）时告警，提示迁移到哈希存储
+	if !isBcryptHash(cfg.Admin.Password) {
+		log.Printf("[SECURITY] 管理员口令为明文存储，建议使用 bcrypt 哈希（运行 `yufu-server hash-password <口令>` 生成后替换 configs/server.yaml 的 admin.password）")
 	}
 	db, err := InitDB(cfg.DBPath)
 	if err != nil {
