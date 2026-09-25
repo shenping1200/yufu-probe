@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race)
+        # 竞态检测 + 端到端单测：七轮审查里所有真 bug 都靠 race 检测器与实测抓出，
+        # 故把 go test -race 作为 CI 主干。server 包含 clientIP / rightmostValidXFF 等纯函数单测。
+        run: go test -race ./server/
+
+      - name: gofmt (changed files)
+        # 仅检查本次改动涉及的 .go 文件，避免历史遗留未格式化文件（见 V4-5 backlog）阻断 CI；
+        # 新提交的代码必须 gofmt 干净。
+        run: |
+          FILES=$(git diff --name-only HEAD~1 HEAD -- '*.go')
+          if [ -z "$FILES" ]; then
+            echo "无 Go 文件改动，跳过 gofmt 检查"
+            exit 0
+          fi
+          BAD=$(gofmt -l $FILES)
+          if [ -n "$BAD" ]; then
+            echo "以下改动文件未格式化（请在本机运行 gofmt -w 后重新提交）:"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "gofmt 检查通过（仅针对本次改动文件）"

@@ -174,6 +174,9 @@ func clientIP(r *http.Request, trusted []*net.IPNet) string {
 // （调用方回退 RemoteAddr）。（V4-1）
 // V6-2：显式配置 trusted_proxy 时，跳过落在可信网段内的项（多层反代时最右项可能就是反代自身的
 // 内网 IP，跳过它才能取到真实客户端 IP）。
+// V7-1：未配置 trusted_proxy 时，反代自身回源地址几乎必然为私网/回环，故对私网/回环项同样跳过
+// （两层及以上反代且未配置 trusted_proxy 时，否则会取到反代自身内网 IP 并触发 self-DoS 变体）。
+// 全部被跳过（例如 XFF 里全是私网/回环）时返回空串，调用方回落 RemoteAddr，不取伪造值。
 // V6-3：返回 net.ParseIP(cand).String() 规范化，避免 ::ffff:1.2.3.4 与 1.2.3.4、IPv6 不同写法
 // 被拆成多个限流桶。
 func rightmostValidXFF(xff string, trusted []*net.IPNet) string {
@@ -189,7 +192,13 @@ func rightmostValidXFF(xff string, trusted []*net.IPNet) string {
 			continue
 		}
 		// 跳过可信反代自身 IP（多层反代场景）
-		if len(trusted) > 0 && isTrustedProxy(cand, trusted) {
+		if len(trusted) > 0 {
+			if isTrustedProxy(cand, trusted) {
+				continue
+			}
+		} else if ip.IsLoopback() || ip.IsPrivate() {
+			// 未配置 trusted_proxy 时，反代自身回源地址几乎必然是私网/回环，
+			// 据此启发式跳过，避免两层及以上反代时取到反代自身内网 IP（V7-1）。
 			continue
 		}
 		return ip.String()
