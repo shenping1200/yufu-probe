@@ -45,7 +45,7 @@
 ## 二、部署与回退
 
 ### 已部署
-- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `ec6a18c1992f`（构建于 2026-09-25，含 V5-1/V4-1/V5-3·4·5 复审修复；历史镜像：`4c06a1e499a3` bcrypt 落地、`4fc42b2b2202` P1+D、`15d118cef089` 二次热修+拖拽手柄、`f1d6fbb80c9a` 二次热修、`8dbb113f93cc` 初版 hardening）
+- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `7915deb8cfcb`（构建于 2026-09-25，含 V6-1/V4-2/V6-2/V6-3 复审修复；历史镜像：`ec6a18c1992f` v5、`4c06a1e499a3` bcrypt 落地、`4fc42b2b2202` P1+D、`15d118cef089` 二次热修+拖拽手柄、`f1d6fbb80c9a` 二次热修、`8dbb113f93cc` 初版 hardening）
 - 容器 `probe-server` 已重建运行，端口 19527，挂载卷 **`yufu-probe_probe-data`**
 - 验证：登录正常、25 台机器在线、**23 个自定义别名完好**（数据卷未丢）、前端 `?v=48` 已生效；本次重建后再验证——25+ agent 经 WS 正常回连、日志无 panic、P1 自动信任分支经回环+XFF 探测实测触发（见「五」）
 
@@ -248,7 +248,56 @@
 
 ---
 
-## 八、后续建议（更新）
+## 八、v6 复审修复（V6-1 空口令直通回归 + V4-2/V6-2/V6-3 + V4-7，2026-09-25）
+
+> 触发：第三方交叉验证复审（`D:\EXE\yufu-probe-code-review-v6.md`）对照源码复核 v5 增量（`3b50d8f..b15cdc0`），确认 V5-1/V4-1/V5-3·4·5 修对，但发现 v5 引入的**空口令直通回归 V6-1**，并复核 V4-2/V6-2/V6-3/V4-7 等历史项。
+> 分支：`main`（fast-forward 合并 `fix-v6-review`，`b15cdc0..a05a59b`，1 个提交）
+> 提交：`a05a59b` — fix(v6): V6-1 三处调用点显式拒绝空口令直通 + V4-2 trustXFF 私网回环恒信任 + V6-2 跳可信段 + V6-3 IP 规范化 + V4-7 注释
+> 部署状态：VPS 已重建镜像 `7915deb8cfcb` 并验证通过
+
+### 🔴 V6-1（v5 引入的回归，本轮最该先修）：`eff == ""` 导致空口令直通
+- **根因（如实）**：v5 把 `effectiveSSHPassword` 的返回值契约从"永不为空"改成"bcrypt+空 ssh_password 时返回空串"，但三处调用点仍是单向 `!=` 比较——`eff==""` 且提交空口令时 `"" != ""` 为 false → 通过鉴权。
+- **触发路径恰好是文档引导运维去做的事**：按 v5/文档把 `admin.password` 迁成 bcrypt 且没配 `ssh_password` → 提交**空口令**即可通过 Web SSH / 批量执行拿到被管机 root shell；自动部署中"规则未存密码"也会因 `pw==""` 放行。**且全程无日志**（不进"密码错误"分支）。
+- **前置**：`requireAdmin` 已生效，攻击者需先有合法 admin 会话——但 Web SSH/批量执行是"第二道门"（设计意图：即使面板会话被盗也拿不到被管机 root），这道门对空字符串敞开 = 第二道门拆了。
+- **修复（3 行）**：三处调用点都加 `eff == ""` 显式拒绝——
+  - `terminal.go` / `exec.go`：Web SSH / 批量执行在 `eff == ""` 时直接返回明确错误"未配置 ssh_password，Web SSH 不可用"（**不误触发 24h 锁定**，便于运维定位）；
+  - `deploy.go`：自动部署 `eff == "" || pw != eff` → 跳过该规则。
+- **范围说明**：v5 修复的"bcrypt+空 ssh_password → SSH 全挂"与本轮"空口令直通"是同一配置态的两面；V6-1 修好后，**未配 ssh_password 既不会全挂（V5-1）也不会被空口令绕过（V6-1）**——统一为"明确拒绝 + 提示先配 ssh_password"。运维迁移 `admin.password` 为 bcrypt 的**硬前置条件**仍是：先显式设置 `ssh_password`。
+
+### 🟠 V4-2（显式 trusted_proxy 配错 → 回落 RemoteAddr → self-DoS）
+- **根因（如实）**：v3/v5 的 `trustXFF` 仅在"直连源在 trusted 列表"或"未配 trusted 且源私网/回环"时为真；若**显式配了 trusted_proxy 但直连源（私网/回环反代）没在列表内**，就回落成"所有请求共用反代 IP 一个限流桶"→ 5 次失败锁死管理员 15 分钟（P1 self-DoS 复现）。
+- **修复**：`trustXFF` 改为 `sourcePrivate || (len(trusted) > 0 && isTrustedProxy(host, trusted))`——**直连来源是私网/回环即信任 XFF**（公网攻击者无法伪造私网/回环，BCP38 入口过滤丢弃，安全），既修 self-DoS 又不弱化安全；公网直连仍只用 RemoteAddr。配置不匹配的告警文案同步修正（已自动信任，提示可把源加入 trusted 收紧）。
+
+### 🟡 V6-2（多层反代时最右项是反代自身 IP）
+- **根因（如实）**：`rightmostValidXFF` 自右向左取第一个合法 IP，两层反代时最右项就是第二层反代的 IP → 复用桶（P1 另一种触发）。
+- **修复**：显式配置 `trusted_proxy` 时，扫描跳过落在可信网段内的项（`isTrustedProxy(cand, trusted)`），从而取到真实客户端 IP。**未配置 trusted 时不跳过**（保留 CGNAT 客户端按真实私网 IP 分桶的正确性，避免误伤）。
+
+### 🟡 V6-3（IP 未规范化 → 同一来源拆多个桶）
+- **根因（如实）**：`rightmostValidXFF` 返回原始串而非 `net.ParseIP(cand).String()`，`1.2.3.4` 与 `::ffff:1.2.3.4`、IPv6 不同写法 → 多个限流桶（阈值变相翻倍）。
+- **修复**：`return net.ParseIP(cand).String()` 规范化（一行）。
+
+### 🟡 V4-7（`trusted_proxy` 注释自相矛盾）
+- **根因（如实）**：原注释既说"反代时【必须】填写"又说"留空也会自动信任"——打架，会误导运维填错值（填错后果是静默 P1）。
+- **修复**：重写注释为准确口径：直连暴露/私网回源反代 → 留空自动信任；**仅公网反代/CDN（呈现公网 IP 给探针）才必须填**；填错也不 self-DoS（已按私网回环自动信任），只是放弃收紧。
+
+### 涉及文件
+`server/terminal.go`（Web SSH 加 `eff==""` 拒绝）、`server/exec.go`（批量执行加 `eff==""` 拒绝）、`server/deploy.go`（自动部署 `eff=="" || pw!=eff`）、`server/api.go`（`trustXFF` 重写 + `rightmostValidXFF(xff, trusted)` 跳过可信段 + 规范化 + 告警文案）、`configs/server.yaml`（重写 `trusted_proxy` 注释；该文件被上传脚本排除，**不覆盖生产配置**）
+
+### 验证（VPS 实测，全绿）
+- **编译 gate**：`docker build -f Dockerfile.server` → `BUILD_EXIT=0`。
+- **部署**：重建镜像 `7915deb8cfcb`，容器重建运行，**日志无 panic**；运行容器镜像 ID = `sha256:7915deb8cfcb...` 确认。
+- **V6-1 就位**：`terminal.go`/`exec.go` 的 `if eff == "" {` 各 1 处；`deploy.go` 的 `if eff == "" || pw != eff` 1 处（grep 确认）；prod 为明文 admin.password + 显式 ssh_password → eff 非空，正常态未回归（24 个 agent 回连"Web SSH 可用"）。
+- **V4-2/V6-2/V6-3 就位**：`api.go` 的 `sourcePrivate || (len(trusted)`、`rightmostValidXFF(xff, trusted)`、`isTrustedProxy(cand, trusted)` 各 1 处（grep 确认）。
+- **HTTP smoke**：首页 200、错误口令 401；`hash-password` stdin → `$2a$10$...` RC=0。
+- **注**：V6-1 的"空口令直通"只能在 `admin.password`=bcrypt + `ssh_password`=空 的配置态复现（非本生产态），已通过源码审查 + 三处 `eff==""` 显式拒绝确认修复；完整运行时复测交由交叉复审者按报告第八节清单执行。
+
+### 回退锚点
+- 源码：`git tag pre-fix-v6-20260925` → `b15cdc0`（**已推送 GitHub**，回退即 checkout 该 tag 重编）
+- 镜像：`yufu-probe:rollback-pre-v6-20260925` = `ec6a18c1992f`（已在 VPS 保留；回退：`docker tag yufu-probe:rollback-pre-v6-20260925 ghcr.io/shenping1200/yufu-probe:latest && cd /opt/yufu-probe && docker compose up -d --pull never`）
+
+---
+
+## 九、后续建议（更新）
 - ~~引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。~~ **已完成（见「六、bcrypt 落地」）；生产 `admin.password` 仍明文，待运维执行 `hash-password` 迁移。**
 - 加 CI 跑 **`go test -race ./server/`**，并加一条**长请求冒烟用例**（断言 exec 超时 > WriteTimeout 不失败）——N1/U1 这类"读代码难发现、一跑就露馅"的回归只能靠它自动抓。
 - 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
