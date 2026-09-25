@@ -38,14 +38,14 @@
 | #20 | 合规：HK/TW 被列为独立国家 | 名称改为 **中国香港 / 中国台湾** |
 | #21 | 死代码 / 一致性 | 清理 agent `locale` 占位、terminal 冗余赋值等 |
 
-> 说明：审计报告的 #13/#14/#15/#17 等其余 P2 项（调度 ticker stall、Windows Web SSH、CWD 依赖配置路径等）多为场景限制或低概率，本次未逐一处理，已在仓库 `rollback` 锚点前保留原状；bcrypt 因本机无 Go 工具链、且 VPS 构建联网拉依赖有风险，**降级为"常数时间比较 + 强口令告警 + 登录限流"直接掐断爆破**，bcrypt 列入后续建议。
+> 说明：审计报告的 #13/#14/#15/#17 等其余 P2 项（调度 ticker stall、Windows Web SSH、CWD 依赖配置路径等）多为场景限制或低概率，本次未逐一处理，已在仓库 `rollback` 锚点前保留原状；bcrypt 因本机无 Go 工具链、且 VPS 构建联网拉依赖有风险，当时**降级为"常数时间比较 + 强口令告警 + 登录限流"直接掐断爆破**，bcrypt 暂列后续建议——**已于「六、bcrypt 落地」完成落地**。
 
 ---
 
 ## 二、部署与回退
 
 ### 已部署
-- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `4fc42b2b2202`（构建于 2026-09-25，含 P1+D 修复；历史镜像：`15d118cef089` 二次热修+拖拽手柄、`f1d6fbb80c9a` 二次热修、`8dbb113f93cc` 初版 hardening）
+- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `4c06a1e499a3`（构建于 2026-09-25，含 P1+D 修复 + bcrypt 落地；历史镜像：`4fc42b2b2202` P1+D、`15d118cef089` 二次热修+拖拽手柄、`f1d6fbb80c9a` 二次热修、`8dbb113f93cc` 初版 hardening）
 - 容器 `probe-server` 已重建运行，端口 19527，挂载卷 **`yufu-probe_probe-data`**
 - 验证：登录正常、25 台机器在线、**23 个自定义别名完好**（数据卷未丢）、前端 `?v=48` 已生效；本次重建后再验证——25+ agent 经 WS 正常回连、日志无 panic、P1 自动信任分支经回环+XFF 探测实测触发（见「五」）
 
@@ -161,8 +161,44 @@
 
 ---
 
-## 六、后续建议（更新）
-- 引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。
+## 六、bcrypt 落地（管理员口令哈希存储，2026-09-25）
+
+> 触发：用户批准方案 B（bcrypt 落地，老规矩流程：分支 → ff 合并 main → 重建镜像 → VPS 验证 → 推 GitHub → 回退 tag）。
+> 分支：`main`（fast-forward 合并 `fix-bcrypt-password`，`edd97e0..109a5c2`，1 个提交）
+> 提交：`109a5c2` — feat: 管理员口令支持 bcrypt 哈希存储（兼容明文，向后平滑迁移）
+> 部署状态：VPS 已重建镜像 `4c06a1e499a3` 并验证通过
+
+### 目标校正（读源码后）
+经核对 `server/api.go:281-282`、`server/config.go:37`、`server/config.go:110-111`：管理员登录口令**不落 SQLite，而是写在 `configs/server.yaml` 的 `admin.password`**；真正存库的是 deploy 规则密码且已 AES-GCM 加密（`server/deploy.go:38/61`）。故 bcrypt 的落地目标是 **yaml 明文管理员口令**，不是数据库。
+
+### 改动
+| 文件 | 改动 |
+|---|---|
+| `server/api.go` | 新增 `isBcryptHash()` + `checkAdminPassword()`：`admin.password` 以 `$2a$/$2b$/$2y$` 开头则走 `bcrypt.CompareHashAndPassword`，否则回退 `subtle.ConstantTimeCompare` 明文比对；loginHandler 口令比对改走 `checkAdminPassword()` |
+| `server/main.go` | 新增 `hash-password <明文>` 子命令（`bcrypt.GenerateFromPassword`，默认 cost）；启动期若 `admin.password` 非 bcrypt 哈希则打 `[SECURITY]` 明文告警 |
+| `server/config.go` | `AdminConfig.Password` 注释更新（可明文或 bcrypt 哈希，建议哈希；旧部署明文仍兼容） |
+| `go.mod` / `go.sum` | 钉死 `golang.org/x/crypto v0.36.0`（兼容 Go 1.25 构建镜像；避开 `v0.57.0` 需 Go 1.26 的坑，否则 `go build -mod=readonly` 失败） |
+
+### 向后兼容设计（关键）
+- 存储值若是 bcrypt 哈希 → bcrypt 比对；否则 → 原常数时间明文比对。**老部署（yaml 仍是明文）无需停机、无需改配置即可继续登录**，仅启动期打一条明文告警提示迁移。
+- 提供 `yufu-server hash-password <口令>` 一键生成哈希，运维替换 `admin.password` 即可完成迁移，登录路径对该次登录瞬间切换为哈希比对。
+
+### 验证（VPS 实测，全绿）
+- `docker exec probe-server /app/probe-server hash-password secret123` → `$2a$10$9jKT6r7z...`（`$2a$` 是 Go bcrypt 标准输出，证明 bcrypt 已编入二进制）。
+- 启动日志触发 `[SECURITY] 管理员口令为明文存储，建议使用 bcrypt 哈希...`（当前生产 yaml 仍为明文，告警提示迁移）。
+- 首页 `GET /` → HTTP 200；错误口令登录 `POST /api/login` → 401；19 个 agent 经 WS 正常回连、日志无 panic。
+
+### 涉及文件
+`server/api.go`、`server/main.go`、`server/config.go`、`go.mod`、`go.sum`
+
+### 回退锚点
+- 源码：`git tag pre-fix-bcrypt-20260925` → `edd97e0`（**已推送 GitHub**，回退即 checkout 该 tag 重编）
+- 镜像：`yufu-probe:rollback-pre-bcrypt-20260925` = `4fc42b2b2202`（已在 VPS 保留；回退：`docker tag yufu-probe:rollback-pre-bcrypt-20260925 ghcr.io/shenping1200/yufu-probe:latest && cd /opt/yufu-probe && docker compose up -d --pull never`）
+
+---
+
+## 七、后续建议（更新）
+- ~~引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。~~ **已完成（见「六、bcrypt 落地」）；生产 `admin.password` 仍明文，待运维执行 `hash-password` 迁移。**
 - 加 CI 跑 **`go test -race ./server/`**，并加一条**长请求冒烟用例**（断言 exec 超时 > WriteTimeout 不失败）——N1/U1 这类"读代码难发现、一跑就露馅"的回归只能靠它自动抓。
 - 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
 - 评估报告其余 P2 项（调度 ticker stall、Windows Web SSH 等）是否在本项目适用。
