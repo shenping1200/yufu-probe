@@ -45,7 +45,7 @@
 ## 二、部署与回退
 
 ### 已部署
-- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `4c06a1e499a3`（构建于 2026-09-25，含 P1+D 修复 + bcrypt 落地；历史镜像：`4fc42b2b2202` P1+D、`15d118cef089` 二次热修+拖拽手柄、`f1d6fbb80c9a` 二次热修、`8dbb113f93cc` 初版 hardening）
+- VPS 镜像：`ghcr.io/shenping1200/yufu-probe:latest` = `ec6a18c1992f`（构建于 2026-09-25，含 V5-1/V4-1/V5-3·4·5 复审修复；历史镜像：`4c06a1e499a3` bcrypt 落地、`4fc42b2b2202` P1+D、`15d118cef089` 二次热修+拖拽手柄、`f1d6fbb80c9a` 二次热修、`8dbb113f93cc` 初版 hardening）
 - 容器 `probe-server` 已重建运行，端口 19527，挂载卷 **`yufu-probe_probe-data`**
 - 验证：登录正常、25 台机器在线、**23 个自定义别名完好**（数据卷未丢）、前端 `?v=48` 已生效；本次重建后再验证——25+ agent 经 WS 正常回连、日志无 panic、P1 自动信任分支经回环+XFF 探测实测触发（见「五」）
 
@@ -197,7 +197,58 @@
 
 ---
 
-## 七、后续建议（更新）
+## 七、v5 复审修复（V5-1 + V4-1 + V5-3/4/5，2026-09-25）
+
+> 触发：第三方交叉验证复审（`D:\EXE\yufu-probe-code-review-v5.md`）对照源码复核，确认 V5-1（关键）、V4-1（实质仍存）、V5-3/4/5 成立；675 直连暴露下 V4-1/V5-2 不触发。
+> 分支：`main`（fast-forward 合并 `fix-v5-review`，`3b50d8f..aa6ac6a`，1 个提交）
+> 提交：`aa6ac6a` — fix(v5): V5-1 切断 admin.password to SSH 回退链 + V4-1 XFF 取最右合法项 + V5-3/4/5 健壮性
+> 部署状态：VPS 已重建镜像 `ec6a18c1992f` 并验证通过
+
+### V5-1（🔴 关键）：`admin.password` 字段两用导致迁移后 SSH 全挂 + 24h 锁
+- **机制（属实）**：`configs/server.yaml` 的 `admin.password` **既是面板登录凭据**（bcrypt 落地后走哈希比对），**又是** Web SSH（`terminal.go`）、批量执行（`exec.go`）、自动部署（`deploy.go` 的 `effectiveSSHPassword`）三处的**共享明文 SSH 密钥**。三处都有内联回退 `eff = cfg.SSHPassword; if eff=="" { eff = cfg.Admin.Password }`。
+- **灾难链**：运维一旦按「六」执行 `hash-password` 把 `admin.password` 迁移成 bcrypt 哈希，而 `server.yaml` 模板缺 `ssh_password` 项（旧部署绝大多数如此）→ 三处回退把 **bcrypt 哈希当明文 SSH 口令** 比对 → Web SSH / 批量执行 / 自动部署 **全部失败**，且 Web SSH / 批量会触发 **24h 锁定**（self-DoS，且定位极难，因为日志只报认证失败）。
+- **修复（根治）**：
+  1. 抽出统一函数 `effectiveSSHPassword(cfg)`（deploy.go）：`ssh_password` 优先；其次 `admin.password` 是**明文**才回退；**若为 bcrypt 哈希则一律返回空串**（绝把哈希当明文）；都为空则返回空。
+  2. `terminal.go:143`、`exec.go:476` 两处内联回退改为调用该函数。
+  3. `main.go` 启动期新增 **V5-1 告警**：`admin.password` 是 bcrypt 哈希且 `ssh_password` 为空 → 打 `[SECURITY]` 明确提示"会把哈希当明文、将全部失败（且触发 24h 锁定），请显式设置 `ssh_password` 再迁移"；`ssh_password` 未设置提示也按"哈希态=将不可用 / 明文态=将复用管理员密码"分说。
+  4. `configs/server.yaml` 模板在 `admin:` 块下补 `ssh_password: ""` 及注释（说明留空回退、哈希态必须显式设置、仅服务端比对不下发）。**该文件被上传脚本排除，不覆盖生产配置。**
+- **关键约束**：运维**必须**在 V5-1 修好上线验证后，才能执行 `hash-password` 迁移 `admin.password`——顺序反了就会触发上述灾难链。
+
+### V4-1（🟠 实质仍存）：伪造 XFF 绕过登录限流
+- **机制（属实）**：原 `clientIP()` 取 XFF **最左**项 `[0]` 且无 IP 合法性校验，伪造 `X-Forwarded-For` 即可无限换 IP 绕过登录限流（每次失败换一个新桶）。bcrypt 70ms 成本在反代拓扑下变成 CPU DoS 杠杆。
+- **修复**：新增 `rightmostValidXFF(xff)` 取**最右合法 IP**（从右往左首个能 `net.ParseIP` 的项）；`trustXFF` 只在「显式 trusted_proxy 命中」或「未配置 trusted_proxy 且直连来源是私网/回环」时信任 XFF；公网直连暴露（直连来源是公网 IP）仍只用 `RemoteAddr`。
+- **675 现状**：675 是**直连暴露**，公网客户端 `RemoteAddr` 为公网 IP，不进 XFF 分支 → **不触发**；风险仅在「反代拓扑 + 不配 trusted_proxy」。
+
+### V5-3 / V5-4 / V5-5（🟡 健壮性）
+| 项 | 问题 | 修复 |
+|---|---|---|
+| **V5-3** | `hash-password` 明文口令经命令行参数传入，出现在进程列表（`ps`）、shell 历史（`history`） | 优先从 **stdin** 读取（`io.ReadAll(os.Stdin)` + 去 `\r\n`）；仍兼容 argv 但打 `[WARN]` 提示不推荐 |
+| **V5-4** | bcrypt 仅取前 72 字节，超长口令 `GenerateFromPassword` 直接报错且无中文提示；比对侧静默截断导致"改长口令后旧哈希仍匹配" | 生成前 `len(pw) > 72` 主动 `log.Fatalf` 中文提示（生成侧防呆）；比对侧靠 `isBcryptHash` 前缀校验 + 启动期探合法性（见 V5-5）兜底 |
+| **V5-5** | `isBcryptHash` 仅查 `$2a$/$2b$/$2y$` 前缀，复制截断/格式错的"伪哈希"会让登录**永远失败且无任何诊断** | 启动期用错误口令 `bcrypt.CompareHashAndPassword` 探一次合法性，若非 `ErrMismatchedHashAndPassword`（即哈希本身解析失败）则打 `[SECURITY]` 告警，提前暴露"复制截断"类事故 |
+
+### 涉及文件
+`server/deploy.go`（抽 `effectiveSSHPassword`）、`server/terminal.go`（改调）、`server/exec.go`（改调）、
+`server/api.go`（`clientIP` 改写 + `rightmostValidXFF`）、`server/main.go`（`hash-password` 重写 + V5-1/V5-5 启动告警 + `ssh_password` 提示）、`configs/server.yaml`（补 `ssh_password` 模板项；该文件被上传脚本排除，**不覆盖生产配置**）
+
+### 验证（VPS 实测，全绿）
+- **编译 gate**：`docker build -f Dockerfile.server` → `BUILD_EXIT=0`（go.mod/go.sum 解析正常、实编译通过）。
+- **部署**：重建镜像 `ec6a18c1992f`，容器 `probe-server` 重建运行，**日志无 panic**。
+- **V5-3/4（hash-password）**：
+  - stdin 路径 → 输出 `$2a$10$...`，RC=0；
+  - argv 路径 → 先打 `[WARN] 通过命令行参数传入明文口令会出现在进程列表与 shell 历史中...`，再出哈希，RC=0；
+  - 80 字节 → `口令过长：bcrypt 上限为 72 字节，请缩短后再生成（当前 80 字节）`，RC=1（Fatalf 中文提示）；
+  - 恰好 72 字节 → 正常出哈希 RC=0（边界正确）。
+- **V5-1（effectiveSSHPassword 就位）**：`deploy.go:275` 定义，`terminal.go:143` + `exec.go:476` 两处调用均存活。bcrypt+空 `ssh_password` 返回空串分支经源码审查确认；运行时生产 yaml 为明文 `admin.password` + 显式 `ssh_password`，走回退分支——**20 个 agent 全部回连并"Web SSH 可用"**，印证正常态未回归。
+- **V4-1（XFF）**：`trustXFF` + `rightmostValidXFF` + `trusted_proxy` 逻辑全部就位。
+- **HTTP smoke**：首页 `GET /` → 200；错误口令 `POST /api/login` → 401。
+
+### 回退锚点
+- 源码：`git tag pre-fix-v5-20260925` → `3b50d8f`（**已推送 GitHub**，回退即 checkout 该 tag 重编）
+- 镜像：`yufu-probe:rollback-pre-v5-20260925` = `4c06a1e499a3`（已在 VPS 保留；回退：`docker tag yufu-probe:rollback-pre-v5-20260925 ghcr.io/shenping1200/yufu-probe:latest && cd /opt/yufu-probe && docker compose up -d --pull never`）
+
+---
+
+## 八、后续建议（更新）
 - ~~引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。~~ **已完成（见「六、bcrypt 落地」）；生产 `admin.password` 仍明文，待运维执行 `hash-password` 迁移。**
 - 加 CI 跑 **`go test -race ./server/`**，并加一条**长请求冒烟用例**（断言 exec 超时 > WriteTimeout 不失败）——N1/U1 这类"读代码难发现、一跑就露馅"的回归只能靠它自动抓。
 - 评估 `exec` 改异步（提交返回 job id、前端轮询），彻底解 N1 且顺带解调度 ticker stall（原 #15）。
