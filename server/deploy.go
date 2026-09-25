@@ -352,8 +352,11 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 				log.Printf("[deploy] 规则 %d(%s) 解密密码失败: %v（请检查 %s）", rule.ID, rule.Name, err, deployKeyEnv)
 				continue
 			}
-			if pw != eff {
-				log.Printf("[deploy] 规则 %d(%s) 密码与服务器 Web SSH 密码不符，跳过（请在规则中填入正确的 Web SSH 密码）", rule.ID, rule.Name)
+			// V6-1 回归修复：effectiveSSHPassword 在「bcrypt 哈希 + 未配 ssh_password」时返回空串；
+			// 若仅用 `pw != eff` 比较，规则未存密码（pw==""）时会被当作「匹配」放行。
+			// 空串（未配置 ssh_password）或密码不符都跳过该规则。
+			if eff == "" || pw != eff {
+				log.Printf("[deploy] 规则 %d(%s) 未配置 Web SSH 密码或密码不符，跳过（请在规则中填入正确的 Web SSH 密码，或先在 server.yaml 设置 ssh_password）", rule.ID, rule.Name)
 				continue
 			}
 			cands, err := pendingDeployUUIDs(db, rule.SourceGroups)

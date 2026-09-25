@@ -141,6 +141,13 @@ func terminalWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 		// 密码校验（统一走 effectiveSSHPassword：显式 ssh_password 优先；
 		// admin.password 为 bcrypt 哈希时不再当作明文回退，避免 V5-1 故障）
 		eff := effectiveSSHPassword(cfg)
+		// V6-1 回归修复：effectiveSSHPassword 在「bcrypt 哈希 + 未配 ssh_password」时返回空串，
+		// 若仅用 `!=` 比较，提交空口令即可绕过鉴权直连 root shell。空串必须显式拒绝，
+		// 并给出明确提示（不再误触发 24h 锁定，便于运维定位「未配置 ssh_password」）。
+		if eff == "" {
+			client.writeJSON(map[string]string{"action": "error", "message": "Web SSH 未配置密码（server.yaml 未设置 ssh_password），功能不可用；请显式设置 ssh_password 后再使用"})
+			return
+		}
 		if auth.Password != eff {
 			locked, until, _ := RecordSSHFailure(db, targetUUID, ip)
 			if locked {

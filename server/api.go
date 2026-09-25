@@ -131,18 +131,19 @@ func clientIP(r *http.Request, trusted []*net.IPNet) string {
 		host = r.RemoteAddr
 	}
 
-	// 是否应当信任 X-Forwarded-For：直连来源落在 trusted_proxy 列表内，
-	// 或（未配置 trusted_proxy 时）直连来源是私网/回环（反代几乎必然）。
-	trustXFF := false
-	if len(trusted) > 0 {
-		trustXFF = isTrustedProxy(host, trusted)
-	} else if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
-		trustXFF = true
-	}
+	// 是否应当信任 X-Forwarded-For（见 v3 复审 🔴 P1、v5 复审 🟠 V4-1、v6 复审 🟠 V4-2）：
+	//  - 直连来源是私网/回环（反代几乎必然，且公网攻击者无法伪造私网/回环来源，BCP38 入口过滤会丢弃）→ 始终信任 XFF；
+	//  - 或显式配置 trusted_proxy 且直连来源落在该列表内（公网反代/CDN 场景）；
+	// 直连来源是公网 IP 时不信任 XFF（避免外部客户端伪造 XFF 无限换桶绕过登录限流），退回 RemoteAddr。
+	// V4-2 修复：显式配置了 trusted_proxy 但直连来源（私网/回环反代）没在列表内时，旧逻辑回落 RemoteAddr
+	// 导致所有请求共用一个限流桶（self-DoS）；改为私网/回环来源恒信任 XFF，既修 self-DoS 又保留安全意图。
+	srcIP := net.ParseIP(host)
+	sourcePrivate := srcIP != nil && (srcIP.IsLoopback() || srcIP.IsPrivate())
+	trustXFF := sourcePrivate || (len(trusted) > 0 && isTrustedProxy(host, trusted))
 
 	if trustXFF {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if ip := rightmostValidXFF(xff); ip != "" {
+			if ip := rightmostValidXFF(xff, trusted); ip != "" {
 				if len(trusted) == 0 {
 					proxyAutoTrustLogged.Do(func() {
 						log.Printf("[config] 检测到反代（私网/回环来源），已自动信任 X-Forwarded-For 取真实客户端 IP（取最右合法项）；如需收紧可显式配置 trusted_proxy")
@@ -154,33 +155,44 @@ func clientIP(r *http.Request, trusted []*net.IPNet) string {
 		return host
 	}
 
-	// 显式配置了 trusted_proxy，但直连来源是私网/回环却不在列表内：XFF 不会被信任，
-	// 反代部署下仍会共用一个限流桶（self-DoS 隐患），提示运维核对配置。
+	// 显式配置了 trusted_proxy，但直连来源是私网/回环且不在列表内：已按「私网/回环恒信任 XFF」
+	// 自动信任（与未配置 trusted_proxy 时一致），不会 self-DoS；但若要收紧只信任列表内反代，
+	// 应把该来源加入 trusted_proxy。提示运维核对配置。
 	if len(trusted) > 0 {
-		if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		if srcIP != nil && (srcIP.IsLoopback() || srcIP.IsPrivate()) && !isTrustedProxy(host, trusted) {
 			proxyTrustMismatchLogged.Do(func() {
-				log.Printf("[WARN] trusted_proxy 已配置，但直连来源 %s 是私网/回环且不在列表内，XFF 不会被信任；反代部署下可能共用限流桶导致锁死管理员，请核对 trusted_proxy", host)
+				log.Printf("[WARN] trusted_proxy 已配置，但直连来源 %s 是私网/回环且不在列表内；已按私网/回环自动信任 X-Forwarded-For（与未配置时一致，不会 self-DoS）。如需收紧只信任列表内反代，请把它加入 trusted_proxy", host)
 			})
 		}
 	}
 	return host
 }
 
-// rightmostValidXFF 从 X-Forwarded-For 中取【最右（最后追加）且为合法 IP】的一项。
-// 最左项可被客户端伪造（绕过限流），最右项才是可信反代基于真实连接写上的；自右向左扫描，
+// rightmostValidXFF 从 X-Forwarded-For 取【最右（最后追加）且为合法 IP】的项。
+// 最左项可被客户端伪造（绕过限流），最右项才是可信反代基于真实连接刚写上的；自右向左扫描，
 // 遇到第一个合法 IP 即返回；若最右项是垃圾/伪造（非法 IP）则继续向左找，全部非法返回空串
 // （调用方回退 RemoteAddr）。（V4-1）
-func rightmostValidXFF(xff string) string {
+// V6-2：显式配置 trusted_proxy 时，跳过落在可信网段内的项（多层反代时最右项可能就是反代自身的
+// 内网 IP，跳过它才能取到真实客户端 IP）。
+// V6-3：返回 net.ParseIP(cand).String() 规范化，避免 ::ffff:1.2.3.4 与 1.2.3.4、IPv6 不同写法
+// 被拆成多个限流桶。
+func rightmostValidXFF(xff string, trusted []*net.IPNet) string {
 	parts := strings.Split(xff, ",")
 	for i := len(parts) - 1; i >= 0; i-- {
 		cand := strings.TrimSpace(parts[i])
 		if cand == "" {
 			continue
 		}
-		if net.ParseIP(cand) != nil {
-			return cand
+		ip := net.ParseIP(cand)
+		if ip == nil {
+			// 最右项非法（垃圾/伪造），继续向左找
+			continue
 		}
-		// 最右项非法（垃圾/伪造），继续向左找
+		// 跳过可信反代自身 IP（多层反代场景）
+		if len(trusted) > 0 && isTrustedProxy(cand, trusted) {
+			continue
+		}
+		return ip.String()
 	}
 	return ""
 }

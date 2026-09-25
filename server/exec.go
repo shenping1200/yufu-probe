@@ -474,6 +474,12 @@ func execHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			return
 		}
 		eff := effectiveSSHPassword(cfg)
+		// V6-1 回归修复：effectiveSSHPassword 在「bcrypt 哈希 + 未配 ssh_password」时返回空串，
+		// 若仅用 `!=` 比较，提交空口令即可绕过鉴权。空串必须显式拒绝，给出明确提示。
+		if eff == "" {
+			http.Error(w, "Web SSH 未配置密码（server.yaml 未设置 ssh_password），功能不可用；请显式设置 ssh_password 后再使用", http.StatusServiceUnavailable)
+			return
+		}
 		if req.Password != eff {
 			if locked, _, _ := RecordSSHFailure(db, lockKey, ""); locked {
 				http.Error(w, "错误次数过多，已锁定 24 小时", http.StatusForbidden)
