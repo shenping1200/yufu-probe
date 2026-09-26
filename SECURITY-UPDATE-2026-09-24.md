@@ -330,6 +330,35 @@
 
 ---
 
+## 十一、SQLite I/O 性能修复（synchronous=NORMAL，2026-09-26）
+
+> 触发：675 VPS `probe-server` 持续 CPU 100%（实测为 iowait 打满），老大反映"改项目前 30%、改之后 100%"。
+> 分支：`main`（fast-forward 合并 `fix-sqlite-sync`，`d4bb9ba..5b8ddd3`；gofmt 清理 `5b8ddd3..8d5b292`）
+> 提交：`5b8ddd3` — perf(db): SQLite WAL 模式下设 synchronous=NORMAL，去除每事务 fsync；`8d5b292` — style(db): gofmt 修复 AgentRow 结构体字段对齐（CI gofmt 检查通过）
+> 部署状态：VPS 已重建镜像 `5ac813928add` 并验证通过；CI run#5 绿
+
+### 根因（机制级）
+- 675 宿主为**网络盘（virtio vda/30G）**，极慢：`/sys/block/vda/stat` 测得 **util 97.5%、~77ms/次写**（健康 SSD <1ms）。
+- yufu-probe 的 SQLite 用 WAL 模式但 `synchronous` 为默认 **FULL** → **每个事务都 fsync**；57KB/s 稳态写 ÷ ~1KB/事务 ≈ 57 次/s fsync × 77ms ≈ 持续 iowait 打满（CPU 显示 100%）。
+- "改前 30%→改后 100%"：代码未增 DB 写频（v3/v5/v6/v7 是安全逻辑），变量是**重部署后 24 agent 回连 + 9h 数据积累**，使稳态写量越过慢盘 fsync 吞吐上限；慢盘是放大器，fsync 写是触发器。
+- 排除项（已逐一核）：网络软中断（vmstat 的 `wa` 高）、swap 抖动（si/so=0）、磁盘硬件故障（dmesg 无报错）、崩溃重启循环（容器日志无报错、RestartCount=0、重启无效）。
+
+### 修复（~7 行，最小改动）
+- `server/db.go` 的 `InitDB`：`PRAGMA journal_mode=WAL` 之后追加 `PRAGMA synchronous=NORMAL`（WAL 模式下仅 checkpoint 边界 fsync，仍对应用层崩溃安全；仅硬断电可能丢失 ≤1 个 checkpoint，监控探针可接受），彻底去除每事务 fsync。
+- 附 `8d5b292` 一并修正 `AgentRow` 结构体字段对齐（提交版对齐不符 go 1.25 gofmt，此前 db.go 从未作为改动文件被 CI 检查，潜伏至今）→ 让 CI gofmt 检查通过。
+
+### 验证（VPS 实测，全绿）
+- **iowait 暴跌**：修复前 `vmstat` 恒定 `wa≈85%`、idle≈0（CPU 显示 100%）；修复后稳态 `wa≈0%`，仅 WAL checkpoint 突发时偶有 15~52% 尖峰，idle 稳定 80~93% → **CPU 不再被 iowait 钉死**。
+- **功能无回归**：容器重建运行，镜像 ID = `sha256:5ac813928add` 确认；**日志无 panic**；监听 `0.0.0.0:19527` 正常；调度器启动。
+- **数据正常**：探针 DB `probe.db-wal` 4.1MB 持续写入（写盘功能未改坏）；在线 agent **22/24**（另 2 台此刻未连，与修复无关），`sqlite3` 直查 `agents` 表 `online=22 / total=24`。
+- **CI 绿**：GitHub Actions run#5（8d5b292）`go build ./...` + `go vet` + `go test -race ./server/` + `gofmt` 全过。
+
+### 回退锚点
+- 源码：`git tag pre-fix-sqlite-20260926` → `d4bb9ba`（**已推送 GitHub**，回退即 checkout 该 tag 重编）
+- 镜像：`yufu-probe:rollback-pre-sqlite-20260926` = `a8bd14f82d74`（已在 VPS 保留；回退：`docker tag yufu-probe:rollback-pre-sqlite-20260926 ghcr.io/shenping1200/yufu-probe:latest && cd /opt/yufu-probe && docker compose up -d --pull never`）
+
+---
+
 ## 十、后续建议（更新）
 - ~~引入 **bcrypt** 替换明文口令比对（需评估构建依赖）。~~ **已完成（见「六、bcrypt 落地」）；生产 `admin.password` 仍明文，待运维执行 `hash-password` 迁移。**
 - ✅ **CI 已落地**（见「九」）：`go test -race ./server/` + `go vet` + `gofmt` + 构建，push/pr 自动跑；长请求冒烟用例（断言 exec 超时 > WriteTimeout 不失败）留作后续补充——N1/U1 这类"读代码难发现、一跑就露馅"的回归主要靠它自动抓。
