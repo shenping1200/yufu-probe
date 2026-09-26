@@ -12,25 +12,25 @@ import (
 
 // AgentRow 单台机器的聚合状态（含本月累计流量）
 type AgentRow struct {
-	UUID      string  `json:"uuid"`
-	Alias     string  `json:"alias"`
-	Hostname  string  `json:"hostname"`
-	IP        string  `json:"ip"`
-	PublicIP  string  `json:"public_ip"`
-	PublicIP4 string  `json:"public_ip4"`
-	PublicIP6 string  `json:"public_ip6"`
-	BootTime  int64   `json:"boot_time"`
-	Uptime    int64   `json:"uptime"`
-	CPU       float64 `json:"cpu"`
-	CPUCount  int     `json:"cpu_count"`
-	MemUsed   float64 `json:"mem_used"`
-	MemTotal  float64 `json:"mem_total"`
-	DiskUsed  float64 `json:"disk_used"`
-	DiskTotal float64 `json:"disk_total"`
-	RxRate    float64 `json:"rx_rate"`
-	TxRate    float64 `json:"tx_rate"`
-	Online    bool    `json:"online"`
-	LastSeen  int64   `json:"last_seen"`
+	UUID        string  `json:"uuid"`
+	Alias       string  `json:"alias"`
+	Hostname    string  `json:"hostname"`
+	IP          string  `json:"ip"`
+	PublicIP    string  `json:"public_ip"`
+	PublicIP4   string  `json:"public_ip4"`
+	PublicIP6   string  `json:"public_ip6"`
+	BootTime    int64   `json:"boot_time"`
+	Uptime      int64   `json:"uptime"`
+	CPU         float64 `json:"cpu"`
+	CPUCount    int     `json:"cpu_count"`
+	MemUsed     float64 `json:"mem_used"`
+	MemTotal    float64 `json:"mem_total"`
+	DiskUsed    float64 `json:"disk_used"`
+	DiskTotal   float64 `json:"disk_total"`
+	RxRate      float64 `json:"rx_rate"`
+	TxRate      float64 `json:"tx_rate"`
+	Online      bool    `json:"online"`
+	LastSeen    int64   `json:"last_seen"`
 	CreatedAt   int64   `json:"created_at"`
 	Country     string  `json:"country"`
 	CountryCode string  `json:"country_code"`
@@ -41,7 +41,7 @@ type AgentRow struct {
 	RxMonth     float64 `json:"rx_month"`
 	TxMonth     float64 `json:"tx_month"`
 	// ExpireAt VPS 到期时间（Unix 秒）。为 nil 表示未设置。
-	ExpireAt    *int64  `json:"expire_at"`
+	ExpireAt *int64 `json:"expire_at"`
 }
 
 // MonthlyTraffic 自然月流量历史
