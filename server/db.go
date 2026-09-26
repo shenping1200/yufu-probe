@@ -65,6 +65,13 @@ func InitDB(path string) (*sql.DB, error) {
 	if _, err = db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		return nil, err
 	}
+	// 性能修复（2026-09-26）：675 VPS 宿主网络盘极慢（~77ms/次写、util 97.5%），
+	// SQLite 默认 synchronous=FULL 会对每个事务 fsync，被慢盘放大成持续 iowait 打满（CPU 显示 100%）。
+	// WAL 模式下 synchronous=NORMAL 仅在 checkpoint 边界 fsync，仍对应用层崩溃安全
+	//（仅硬断电可能丢失 ≤1 个 checkpoint 的写入，监控探针可接受），彻底去除每事务 fsync。
+	if _, err = db.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
+		return nil, err
+	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS agents (
 			uuid TEXT PRIMARY KEY,
