@@ -7,6 +7,9 @@ services:
     ports:
       # 冷门端口：宿主机:容器（容器内固定 39689）
       - "39689:39689"
+    environment:
+      # 自动部署规则密码 AES-GCM 加密密钥（必填）。请用 .env 或部署环境提供，禁止把真实值写进仓库
+      - YUFU_DEPLOY_KEY=${YUFU_DEPLOY_KEY}
     volumes:
       - probe-data:/app/data     # 仅持久化 SQLite 数据库（避免覆盖镜像内的二进制/配置）
     restart: unless-stopped
