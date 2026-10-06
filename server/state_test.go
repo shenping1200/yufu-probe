@@ -11,6 +11,7 @@ import (
 //  1. 双栈上报时 v4/v6 均正确透传；
 //  2. 老 agent 只报单个 public_ip（v4）时，自动归类到 PublicIP4；
 //  3. 老 agent 只报单个 public_ip（v6）时，自动归类到 PublicIP6。
+//
 // 保证滚动升级（新 server + 老 agent）期间列表 IP 不空白。
 func TestApplyReportDualStack(t *testing.T) {
 	s := NewServerState()
@@ -64,6 +65,7 @@ func TestApplyReportCountryCode(t *testing.T) {
 //  1. 幽灵孤儿（online=0 且 last_seen=0，被写入 DB 但从未连上来上报）→ 必须被清；
 //  2. 真实离线机（online=0 但 last_seen>0，曾上报后来掉线）→ 必须保留；
 //  3. 在线机（online=1）→ 必须保留。
+//
 // 这样监控面板既能挡住离线幽灵，又能正常显示真掉线的机器。
 func TestCleanupStale(t *testing.T) {
 	s := NewServerState()

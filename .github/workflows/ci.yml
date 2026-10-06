@@ -35,7 +35,7 @@ jobs:
         # 仅检查本次改动涉及的 .go 文件，避免历史遗留未格式化文件（见 V4-5 backlog）阻断 CI；
         # 新提交的代码必须 gofmt 干净。
         run: |
-          FILES=$(git diff --name-only HEAD~1 HEAD -- '*.go')
+          FILES=$(git diff --name-only 32dd698 HEAD -- '*.go')
           if [ -z "$FILES" ]; then
             echo "无 Go 文件改动，跳过 gofmt 检查"
             exit 0
