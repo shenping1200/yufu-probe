@@ -232,15 +232,20 @@ func TestFlushHeartbeatThrottled(t *testing.T) {
 		t.Fatalf("节流窗口内的心跳不应落库，应仍有 1 台待落库，实际 %d", got)
 	}
 
-	// 3) 管理员改动（改分组）必须无视节流窗口、立即落库。
-	group := "分组A"
-	s.UpdateAdmin("u-new", nil, nil, &group, nil)
+	// 3) 上下线属于重要变化，必须无视节流窗口立即落库。
+	//    判据取 DB 里的 online 字段——它正是走 UpsertAgentTx 落库的字段之一；
+	//    （分组/别名/备注由 UpdateAgent 直写接口落库，本就不经过 Flush，天然即时。）
+	//    用负阈值把这台机器强制判为离线：LastSeen < now+1 恒成立。
+	s.SetOffline(-1)
+	if s.agents["u-new"].Online {
+		t.Fatalf("SetOffline(-1) 应把机器标记为离线")
+	}
 	s.Flush(db, "2026-08")
 	if got := s.PendingCount(); got != 0 {
-		t.Fatalf("管理员改动应立即落库，实际仍有 %d 台待落库", got)
+		t.Fatalf("上下线应立即落库，实际仍有 %d 台待落库", got)
 	}
-	if got := groupOf(t, db, "u-new"); got != "分组A" {
-		t.Fatalf("分组应立即写入数据库，实际 %q", got)
+	if got := onlineOf(t, db, "u-new"); got {
+		t.Fatalf("离线状态应立即写入数据库，实际库内仍为在线")
 	}
 }
 
@@ -253,13 +258,13 @@ func countAgents(t *testing.T, db *sql.DB) int {
 	return n
 }
 
-func groupOf(t *testing.T, db *sql.DB, uuid string) string {
+func onlineOf(t *testing.T, db *sql.DB, uuid string) bool {
 	t.Helper()
-	var g sql.NullString
-	if err := db.QueryRow(`SELECT group_name FROM agents WHERE uuid=?`, uuid).Scan(&g); err != nil {
-		t.Fatalf("查询分组失败: %v", err)
+	var n int
+	if err := db.QueryRow(`SELECT online FROM agents WHERE uuid=?`, uuid).Scan(&n); err != nil {
+		t.Fatalf("查询在线状态失败: %v", err)
 	}
-	return g.String
+	return n == 1
 }
 
 // trafficOf 读取指定机器指定月份的 rx_total（不存在返回 0）
