@@ -84,6 +84,18 @@ type AgentReport struct {
 	TxDelta   float64 `json:"tx_delta"`
 }
 
+// reportEnvelope 是 agent 上报报文的统一解析结构，用于「一次解析、按 action 分派」。
+//
+// 嵌入 AgentReport 后，它的字段（uuid / hostname / cpu / ...）在 encoding/json 眼里
+// 会被当作本结构的平级字段处理，因此一条报文只需一次 Unmarshal 就能同时拿到
+// action 与全部业务字段，无需像旧实现那样把同一段 JSON 反复解析三遍。
+type reportEnvelope struct {
+	Action  string `json:"action"`
+	Session string `json:"session"`
+	Data    string `json:"data"`
+	AgentReport
+}
+
 // broadcastAgents 把当前内存中的全量状态推送给所有 viewer。
 // 由 main.go 的定时 ticker 周期调用（不再在每条上报里调用），
 // 因此广播频率固定为 1 次/秒，与客户端数量解耦。
@@ -93,7 +105,20 @@ type AgentReport struct {
 // 这样即便后端发送缓冲积压先推来了改动前的旧快照，也不会把前端的乐观更新打回原状。
 var broadcastSeq uint64
 
-func broadcastAgents(hub *Hub) {
+// broadcastAgentsFull 推送【全量快照】给所有 viewer。
+//
+// 用于三种场景：viewer 刚连上的首帧、每 60 秒一次的对账帧、以及管理员操作后的即时推送。
+// 成本与机器总数成正比（5000 台约 3.7MB），因此**不能**每秒调用——日常刷新走
+// broadcastAgentsDelta。全量帧的另一个职责是"纠偏"：增量广播万一丢帧或乱序，
+// 下一帧全量会把前端状态重新对齐，保证显示永远不会与后端长期不一致。
+func broadcastAgentsFull(hub *Hub) {
+	// 广播门控（P0 性能修复）：无人观看实时面板时，直接跳过全量快照拷贝+序列化。
+	// 即便 agent 上报/离线等事件触发本函数，只要当前没有 viewer 连接就无需序列化——
+	// 把"每秒约 1MB 快照"的 CPU 开销彻底降到零（挖矿部署等后台任务不受影响）。
+	// 注意：viewerWSHandler 在 addViewer 之后才调用本函数，故新连接的浏览器仍能拿到首帧快照。
+	if !hub.HasViewers() {
+		return
+	}
 	list := live.Snapshot()
 	groups := live.Groups()
 	seq := atomic.AddUint64(&broadcastSeq, 1)
@@ -101,7 +126,52 @@ func broadcastAgents(hub *Hub) {
 	if err != nil {
 		return
 	}
+	// 全量帧已包含截至此刻的完整状态，丢弃此前积压的增量，避免下一帧重复推送同样的变化。
+	live.MarkBroadcasted()
 	hub.BroadcastToViewers(payload)
+}
+
+// broadcastAgentsDelta 推送【增量】给所有 viewer：只包含自上次广播以来真正变化的机器。
+//
+// 为什么必须有它：全量快照体积 = 机器数 × 每台约 750 字节。2138 台实测 1.6MB/帧，
+// 每秒一帧意味着服务端每秒要序列化+压缩 1.6MB、浏览器每秒要 JSON.parse 1.6MB。
+// 到了 5000 台就是 3.7MB/秒——服务端单核扛不住，浏览器主线程也会被解析和 GC 堵死，
+// 表现为"点一下按钮要顿半秒"。而实际上每秒真正变化的通常只有几十台（心跳是错峰的），
+// 增量帧能把单帧从 MB 级降到 KB 级，服务端和浏览器同时减负。
+//
+// 安全性：增量只推"变化的部分"，所以删除必须单独下发（removed），否则被删的机器
+// 会永远残留在面板上；序号 seq 与全量帧共用同一个计数器，前端据此丢弃过期帧。
+func broadcastAgentsDelta(hub *Hub) {
+	if !hub.HasViewers() {
+		// 无人观看时直接丢弃待广播的增量：不积压，也不会漏——
+		// 下次有 viewer 连上时会先收到一帧全量快照（见 viewerWSHandler）。
+		live.MarkBroadcasted()
+		return
+	}
+	changed, removed := live.TakeDelta()
+	if len(changed) == 0 && len(removed) == 0 {
+		return
+	}
+	groups := live.Groups()
+	seq := atomic.AddUint64(&broadcastSeq, 1)
+	payload, err := json.Marshal(map[string]interface{}{
+		"type":    "agents_delta",
+		"changed": changed,
+		"removed": removed,
+		"groups":  groups,
+		"seq":     seq,
+	})
+	if err != nil {
+		return
+	}
+	hub.BroadcastToViewers(payload)
+}
+
+// broadcastAgents 是对外统一的"状态变了，推给面板"入口。
+// 管理员改动（改分组/改别名/删机器等）是低频且要求立刻生效的，直接推全量最稳妥：
+// 一次操作只多花一帧的代价，却顺带完成一次对账，避免增量丢帧让操作看起来"没生效"。
+func broadcastAgents(hub *Hub) {
+	broadcastAgentsFull(hub)
 }
 
 // isSecureCookie 判断 session cookie 是否标记 Secure：HTTPS 直连或经反代以 https 回源时为真，
@@ -871,6 +941,7 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 		// agent 连接也需要一个 Client 句柄（终端网关靠它 safeWrite 下发 shell 指令）。
 		// 这里不跑 writePump：agent 方向走带锁的 safeWrite 直写，不用 send 通道。
 		client := &Client{hub: hub, conn: conn, send: make(chan []byte, 8), role: "agent"}
+		client.lastRead.Store(time.Now().UnixNano()) // 看门狗基准：连接建立即开始计时
 		// ping 保活协程：用 pingDone channel 显式控制退出（#N2）。
 		// time.Ticker.Stop() 不会关闭 channel，若只依赖 Stop，handler 返回后 goroutine 会永久卡在
 		// range 上退不出来——每次 agent 断开都泄漏一个 goroutine（规模 2500 台时尤为严重）。
@@ -885,7 +956,18 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 				case <-pingDone:
 					return
 				case <-t.C:
-					client.safePing()
+					if err := client.safePing(); err != nil {
+						// 写失败说明连接已死（半开/对端消失）：主动关闭，唤醒 ReadMessage
+						// 使其返回错误 → handler 退出 → defer 清理 pingDone/removeAgent/conn，避免协程泄漏。
+						client.conn.Close()
+						return
+					}
+					// 看门狗：连接长时间无任何读活动（对端消失但写缓冲仍接受、safePing 不报错），主动关闭回收。
+					// 阈值取 2×agentPongWait，给正常空闲 agent 留足余量。
+					if last := client.lastRead.Load(); last != 0 && time.Since(time.Unix(0, last)) > 2*agentPongWait {
+						client.conn.Close()
+						return
+					}
 				}
 			}
 		}()
@@ -904,52 +986,58 @@ func agentWSHandler(cfg *Config, db *sql.DB, hub *Hub) http.HandlerFunc {
 			if err != nil {
 				return
 			}
+			client.lastRead.Store(time.Now().UnixNano()) // 更新最后读时间，看门狗据此判断连接是否仍存活
+			// 一次解析，按 action 分派（性能修复 P4）。
+			//
+			// 旧实现是「先试着解析成控制消息 → 再试着解析成终端消息 → 最后解析成状态上报」，
+			// 等于把同一段 JSON 完整解析了三遍。2000+ 台机器每秒数百条上报时，其中两遍是
+			// 纯浪费的 CPU，还会产生三倍临时对象加重 GC；到 5000 台规模这笔开销相当可观。
+			//
+			// 现在把三类消息的字段收进同一个结构体（嵌入 AgentReport 复用其字段定义），
+			// 只解析一次就能同时拿到 action 与全部业务字段，再按 action 走不同分支。
+			var env reportEnvelope
+			if err := json.Unmarshal(data, &env); err != nil {
+				continue
+			}
+
 			// 1) 控制消息：客户端主动注销（收到 SIGTERM 时发送）
 			// 注意：这里**不**删除数据库记录，只清理内存中的实时状态。
 			// 因为 agent 每次重启/升级时，旧进程都会发一次 unregister，如果这里硬删
 			// 会把用户手动设的备注/别名一起带走（即使新二进制立刻带着同 UUID 重连也来不及）。
 			// 真正需要删机器走 DELETE /api/agents/{uuid}（uninstall-agent.sh 用的接口）。
-			var ctrl struct {
-				Action string `json:"action"`
-				UUID   string `json:"uuid"`
-			}
-			if err := json.Unmarshal(data, &ctrl); err == nil && ctrl.Action == "unregister" {
-				if ctrl.UUID != "" {
-					live.Remove(ctrl.UUID)
-					hub.removeAgent(ctrl.UUID)
-					notifyAgentGone(ctrl.UUID)
-					abortExecForAgent(ctrl.UUID)
+			if env.Action == "unregister" {
+				if env.UUID != "" {
+					live.Remove(env.UUID)
+					hub.removeAgent(env.UUID)
+					notifyAgentGone(env.UUID)
+					abortExecForAgent(env.UUID)
 					broadcastAgents(hub)
-					log.Printf("[ws] agent %s 主动断开（记录保留，由 DELETE 接口或离线超时处理）", ctrl.UUID)
+					log.Printf("[ws] agent %s 主动断开（记录保留，由 DELETE 接口或离线超时处理）", env.UUID)
 				}
 				return
 			}
+
 			// 2) Web SSH：agent 回传的 shell 输出/结束信号，按会话 id 转发给浏览器
-			var term struct {
-				Action  string `json:"action"`
-				Session string `json:"session"`
-				Data    string `json:"data"`
-			}
-			if err := json.Unmarshal(data, &term); err == nil {
-				switch term.Action {
-				case "shell_data":
-					// 先查批量命令会话（服务端驱动），再回落到浏览器终端会话
-					if es := findExec(term.Session); es != nil {
-						feedExecData(term.Session, term.Data)
-					} else {
-						forwardShellData(term.Session, term.Data)
-					}
-					continue
-				case "shell_exit":
-					if ts := unregisterTerm(term.Session); ts != nil {
-						ts.browser.writeJSON(map[string]string{"action": "ended", "message": "会话已结束"})
-					}
-					continue
+			switch env.Action {
+			case "shell_data":
+				// 先查批量命令会话（服务端驱动），再回落到浏览器终端会话
+				if es := findExec(env.Session); es != nil {
+					feedExecData(env.Session, env.Data)
+				} else {
+					forwardShellData(env.Session, env.Data)
 				}
+				continue
+			case "shell_exit":
+				if ts := unregisterTerm(env.Session); ts != nil {
+					ts.browser.writeJSON(map[string]string{"action": "ended", "message": "会话已结束"})
+				}
+				continue
 			}
+
 			// 3) 普通状态上报：只更新内存，不做 DB 写入、不广播
-			var rep AgentReport
-			if err := json.Unmarshal(data, &rep); err != nil || rep.UUID == "" {
+			// env.AgentReport 就是嵌入的那部分字段，直接取出复用（零拷贝）。
+			rep := env.AgentReport
+			if rep.UUID == "" {
 				continue
 			}
 			// 首次收到带 UUID 的上报时，把该 agent 连接登记到 hub，

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -145,10 +146,41 @@ func main() {
 	//  - 每秒向所有 viewer 广播一次内存快照（固定 1 次/秒，不再每条上报都广播）
 	//  - 每 2 秒把脏数据批量落库（避免每条上报都写 DB）
 	//  - 每 10 秒扫描一次离线（超时未上报标记为离线）
+	// 运行期健康统计：每 5 分钟打印一次规模指标（机器数 / 在线数 / viewer 数 / 待落库数 /
+	// 后台任务数），用于容量观察与排障。刻意不放进 1 秒 ticker：每秒打印会在数千台规模下
+	// 既刷屏又额外吃掉日志写入开销。
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		for range t.C {
+			total, online := live.Counts()
+			log.Printf("[stats] 机器=%d 在线=%d viewer=%d 待落库=%d 任务数=%d",
+				total, online, len(hub.viewers), live.PendingCount(), runtime.NumGoroutine())
+		}
+	}()
 	go func() {
 		t := time.NewTicker(1 * time.Second)
+		var ticks int
 		for range t.C {
-			broadcastAgents(hub)
+			ticks++
+			// 广播门控（P0 性能修复）：无人观看实时面板时，跳过快照拷贝+序列化
+			//（原本每秒白烧约 34% CPU）；挖矿自动部署等后台任务完全不受影响。
+			if !hub.HasViewers() {
+				continue
+			}
+			// 每 60 秒推一帧全量快照做「对账」。
+			// 增量广播依赖每一帧都送达才能与后端保持一致，一旦中途丢帧（网络抖动、
+			// 浏览器繁忙丢消息、WS 缓冲丢弃），前端状态就会与后端偏离且不会自愈。
+			// 定期全量就是给增量机制买的保险：最坏情况也只是偏差存在 60 秒，
+			// 而不会永久错下去。
+			if ticks%60 == 0 {
+				broadcastAgentsFull(hub)
+				continue
+			}
+			// 状态没变就不序列化（有 viewer 但无 agent 上报/离线时）。
+			if !live.PendingChanged() {
+				continue
+			}
+			broadcastAgentsDelta(hub)
 		}
 	}()
 	go func() {

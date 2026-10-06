@@ -18,6 +18,18 @@ type ServerState struct {
 	agents  map[string]*AgentRow
 	dirty   map[string]bool
 	traffic map[string]trafficDelta
+	// changed 是「自上次广播以来内存发生变化的机器」集合，专供增量广播消费（P3）。
+	// 与 dirty 分离是刻意的：dirty 服务于「落库节流」，changed 服务于「广播节流」，
+	// 两者消费节奏完全不同（落库 60 秒一次、广播每秒一次），共用一个标记会互相干扰——
+	// 比如落库被节流跳过时若顺手清了标记，广播就会误判"没有变化"导致面板静止。
+	changed map[string]bool
+	// removed 是「自上次广播以来被删除的机器」UUID 集合，供增量广播下发删除指令。
+	removed map[string]bool
+	// lastPersist 记录每台机器上次落库的 Unix 秒，用于心跳类字段的落库节流（P2）。
+	lastPersist map[string]int64
+	// forcePersist 标记「必须立即落库」的机器（上线/离线/分组/别名/到期/国家等
+	// 重要变化）。这类变化不能等节流窗口，否则管理员改完分组一重启就回退。
+	forcePersist map[string]bool
 	// groups 是「分组名注册表」，记录所有已存在的自定义分组名（含 0 成员的空组），
 	// 用于标签条渲染与编辑下拉。key=分组名，value=创建时间（Unix 秒）。
 	groups map[string]int64
@@ -36,12 +48,27 @@ type trafficDelta struct {
 // live 是全局唯一的实时状态实例
 var live = NewServerState()
 
+// heartbeatPersistSecs 是「纯心跳字段」（CPU/内存/磁盘/网卡速率/最后在线时间）的落库节流窗口。
+//
+// 为什么能节流：这些字段每秒都在变，但它们的价值只在"此刻看着"——面板读的是内存态，
+// 每次上报都会立刻更新内存，所以节流**完全不影响面板实时性**；落库只是给"服务重启后
+// 恢复到上一次状态"用的，而离线判定本身是分钟级（offline_threshold），差几十秒无感。
+//
+// 为什么必须节流：不节流时每台机器每次心跳都会产生一条 UPSERT，2000 台就是每秒近千次
+// 独立写事务，实测把单核 VPS 的磁盘写满（7.6MB/s、iowait 48%）。节流到 60 秒后，
+// 落库条数降为 1/30，配合批量事务可让写入量降两个数量级——这是支撑 5000 台规模的前提。
+const heartbeatPersistSecs = 60
+
 func NewServerState() *ServerState {
 	return &ServerState{
-		agents:  make(map[string]*AgentRow),
-		dirty:   make(map[string]bool),
-		traffic: make(map[string]trafficDelta),
-		groups:  make(map[string]int64),
+		agents:       make(map[string]*AgentRow),
+		dirty:        make(map[string]bool),
+		traffic:      make(map[string]trafficDelta),
+		changed:      make(map[string]bool),
+		removed:      make(map[string]bool),
+		lastPersist:  make(map[string]int64),
+		forcePersist: make(map[string]bool),
+		groups:       make(map[string]int64),
 	}
 }
 
@@ -138,6 +165,9 @@ func (s *ServerState) applyReport(rep AgentReport, country, countryCode string, 
 	cur, ok := s.agents[rep.UUID]
 	if !ok {
 		cur = &AgentRow{UUID: rep.UUID, CreatedAt: now}
+		// 新机器首次上报：立刻落库建档，否则服务重启后这台机器会凭空消失
+		// （节流窗口可能长达 60 秒，期间重启就丢一台）。
+		s.forcePersist[rep.UUID] = true
 	}
 	cur.Hostname = rep.Hostname
 	cur.IP = rep.IP
@@ -164,6 +194,11 @@ func (s *ServerState) applyReport(rep AgentReport, country, countryCode string, 
 	cur.DiskTotal = rep.DiskTotal
 	cur.RxRate = rep.RxRate
 	cur.TxRate = rep.TxRate
+	// 离线→上线属于重要变化：必须立即落库。否则机器刚恢复、或管理员刚改完分组，
+	// 库里仍停留在"离线/旧分组"，一旦重启就会回退到错误状态。
+	if !cur.Online {
+		s.forcePersist[rep.UUID] = true
+	}
 	cur.Online = true
 	cur.LastSeen = now
 	if rep.OS != "" {
@@ -201,6 +236,9 @@ func (s *ServerState) applyReport(rep AgentReport, country, countryCode string, 
 		}
 	}
 	s.agents[rep.UUID] = cur
+	// 内存态已变：增量广播据此把这台机器推给 viewer（与落库节流无关，
+	// 故放在 changed 里而不是 dirty 里，两者互不影响）。
+	s.changed[rep.UUID] = true
 	if persist {
 		s.dirty[rep.UUID] = true
 	}
@@ -221,6 +259,9 @@ func (s *ServerState) SetCountry(uuid, country, code string) {
 			cur.CountryCode = code
 		}
 		s.dirty[uuid] = true
+		s.changed[uuid] = true
+		// 归属地是低频且重要的字段（异步查询成功后回写），立即落库。
+		s.forcePersist[uuid] = true
 	}
 	s.mu.Unlock()
 }
@@ -233,6 +274,9 @@ func (s *ServerState) SetOffline(threshold int64) {
 		if a.Online && a.LastSeen < now-threshold {
 			a.Online = false
 			s.dirty[a.UUID] = true
+			s.changed[a.UUID] = true
+			// 上下线是重要变化：立即落库，不能被心跳节流窗口延迟。
+			s.forcePersist[a.UUID] = true
 		}
 	}
 	s.mu.Unlock()
@@ -268,6 +312,10 @@ func (s *ServerState) PatchAgentFields(uuid string, group, remark *string, expir
 	if expireAt != nil {
 		a.ExpireAt = expireAt
 	}
+	// 批量编辑同样是管理员改动：立即落库 + 立即广播。
+	s.dirty[uuid] = true
+	s.changed[uuid] = true
+	s.forcePersist[uuid] = true
 }
 
 func (s *ServerState) updateAdmin(uuid string, alias, remark, group *string, expireAt *int64, persist bool) {
@@ -291,6 +339,13 @@ func (s *ServerState) updateAdmin(uuid string, alias, remark, group *string, exp
 	}
 	if persist {
 		s.dirty[uuid] = true
+		s.changed[uuid] = true
+		// 管理员改动（别名/备注/分组/到期）是重要变化：立刻落库，
+		// 否则改完一重启就回退，是最容易被用户感知的丢数据。
+		s.forcePersist[uuid] = true
+	} else {
+		// 压测机（ephemeral）不落库，但仍要广播出去让面板看得到。
+		s.changed[uuid] = true
 	}
 	s.mu.Unlock()
 }
@@ -301,6 +356,14 @@ func (s *ServerState) Remove(uuid string) {
 	delete(s.agents, uuid)
 	delete(s.dirty, uuid)
 	delete(s.traffic, uuid)
+	delete(s.changed, uuid)
+	delete(s.lastPersist, uuid)
+	delete(s.forcePersist, uuid)
+	// 记入删除集合：增量广播需要显式通知 viewer 把这台机器的卡片移除，
+	// 否则只推"变化的机器"时，被删掉的机器会永远残留在面板上。
+	if _, ok := s.removed[uuid]; !ok {
+		s.removed[uuid] = true
+	}
 	s.mu.Unlock()
 }
 
@@ -313,6 +376,8 @@ func (s *ServerState) RenameGroup(oldName, newName string) int {
 		if a.Group == oldName {
 			a.Group = newName
 			s.dirty[a.UUID] = true
+			s.changed[a.UUID] = true
+			s.forcePersist[a.UUID] = true
 			n++
 		}
 	}
@@ -332,6 +397,8 @@ func (s *ServerState) DeleteGroup(name string) int {
 		if a.Group == name {
 			a.Group = ""
 			s.dirty[a.UUID] = true
+			s.changed[a.UUID] = true
+			s.forcePersist[a.UUID] = true
 			n++
 		}
 	}
@@ -367,6 +434,77 @@ func (s *ServerState) Groups() []string {
 	return out
 }
 
+// PendingChanged 返回自上次广播以来是否有机器状态发生变化。
+// 用于广播门控（P0 性能修复）：状态未变时即便有 viewer 连着也不重新序列化，
+// 避免每秒白烧 CPU；agent 上报/离线/管理员改动等事件仍会即时推送，面板实时性不受影响。
+//
+// 注意：这里刻意用 changed 而不是 dirty。dirty 会被落库节流长时间持有
+// （一台机器从上报到落库可能挂 60 秒），若拿它判断"要不要广播"，
+// 广播反而会被"待落库"误导；而面板看的是内存态，判断依据必须是"内存有没有变"。
+func (s *ServerState) PendingChanged() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.changed) > 0 || len(s.removed) > 0
+}
+
+// PendingCount 返回待落库的机器数，仅用于运行期日志统计（[stats]），不参与任何业务逻辑。
+func (s *ServerState) PendingCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.dirty)
+}
+
+// Counts 返回机器总数与在线数，供周期健康日志使用。
+func (s *ServerState) Counts() (total int, online int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	total = len(s.agents)
+	for _, a := range s.agents {
+		if a.Online {
+			online++
+		}
+	}
+	return
+}
+
+// TakeDelta 取走自上次调用以来发生变化与被删除的机器，用于增量广播（P3）。
+//
+// 全量快照的成本与机器总数成正比（5000 台约 3.7MB），每秒推一帧会同时压垮
+// 服务端序列化/压缩与浏览器 JSON.parse。实际每秒真正发生变化的通常只有几十台
+// （心跳是逐台错峰的），因此只推"变化的部分"能把每帧从 MB 级降到 KB 级。
+//
+// 取走即清空（consume 语义）：调用方必须负责把结果广播出去，否则这次变化就丢了。
+// 全量广播（对账帧）走 TakeSnapshot，两者互斥使用。
+func (s *ServerState) TakeDelta() (changed []AgentRow, removed []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.changed) == 0 && len(s.removed) == 0 {
+		return nil, nil
+	}
+	for u := range s.changed {
+		if a, ok := s.agents[u]; ok {
+			changed = append(changed, *a)
+		}
+	}
+	for u := range s.removed {
+		removed = append(removed, u)
+	}
+	// 清空，下一轮只推新变化
+	s.changed = make(map[string]bool)
+	s.removed = make(map[string]bool)
+	return changed, removed
+}
+
+// MarkBroadcasted 在推送全量快照（首帧或对账帧）后调用，丢弃此前积压的增量。
+// 因为全量快照已包含截至此刻的完整最新状态，若不清空，下一帧增量会把同样的
+// 变化再推一遍（无害但浪费）；更重要的是保证"全量帧 → 增量帧"的语义衔接正确。
+func (s *ServerState) MarkBroadcasted() {
+	s.mu.Lock()
+	s.changed = make(map[string]bool)
+	s.removed = make(map[string]bool)
+	s.mu.Unlock()
+}
+
 // Snapshot 返回当前全部机器的副本（用于广播 / REST）。
 // 必须按「添加时间」升序稳定排序：Go map 迭代是随机的，不排序会让卡片
 // 每秒在 UI 上"洗牌"；同时也是用户要求的"按添加时间固定排位"。
@@ -400,15 +538,12 @@ func (s *ServerState) Snapshot() []AgentRow {
 // 修复前内存态只加不减，必须重启容器才会"看起来"归零。
 func (s *ServerState) Flush(db *sql.DB, month string) {
 	s.mu.Lock()
-	uuids := make([]string, 0, len(s.dirty))
-	for u := range s.dirty {
-		uuids = append(uuids, u)
-	}
-	s.dirty = make(map[string]bool)
-	tmap := s.traffic
-	s.traffic = make(map[string]trafficDelta)
+	now := time.Now().Unix()
 
-	// —— 跨月检测 ——
+	// —— 1. 跨月检测 ——
+	// 必须放在「挑选本轮落库机器」之前：跨月时要把残余流量增量写进【上一个月】，
+	// 所以需要先决定 writeMonth，并强制本轮落库全部机器（否则残余增量会顺着
+	// 节流窗口漂到下一个 Flush，那时 lastMonth 已更新，就会错记到新月里）。
 	writeMonth := month // 本轮残余增量写入哪个月
 	rolledFrom := ""    // 非空表示发生了跨月
 	rolledCount := 0
@@ -419,19 +554,77 @@ func (s *ServerState) Flush(db *sql.DB, month string) {
 	case s.lastMonth != month:
 		rolledFrom = s.lastMonth
 		writeMonth = s.lastMonth
-		for _, a := range s.agents {
+		for u, a := range s.agents {
+			// 跨月这一轮强制全量落库：一个月才发生一次，代价可忽略，
+			// 换来的是月度流量账单绝对不会串月。
+			s.dirty[u] = true
+			s.forcePersist[u] = true
 			a.RxMonth = 0
 			a.TxMonth = 0
 			rolledCount++
 		}
 		s.lastMonth = month
 	}
+
+	// —— 2. 落库节流：本轮只挑出「重要变化」或「心跳节流窗口已到」的机器 ——
+	// 纯心跳（CPU/内存/网速/最后在线时间）每秒都在变，但面板读的是内存态、上报即更新，
+	// 落库慢一点对使用零影响；而每台每次心跳都写一次库，2000 台就是每秒近千次写事务，
+	// 实测把单核 VPS 的磁盘打满。节流后落库条数降为约 1/30。
+	// 重要变化（新机器/上下线/分组/别名/到期/归属地）走 forcePersist 无条件立即落库。
+	uuids := make([]string, 0, 64)
+	for u := range s.dirty {
+		if s.forcePersist[u] || now-s.lastPersist[u] >= heartbeatPersistSecs {
+			uuids = append(uuids, u)
+		}
+	}
+	for _, u := range uuids {
+		delete(s.dirty, u)
+		delete(s.forcePersist, u)
+		s.lastPersist[u] = now
+	}
+
+	// 流量增量只搬走本轮真正落库机器的那部分。
+	// 被节流跳过的机器必须把增量继续留在 s.traffic 里累积到下次落库，
+	// 否则这段流量就永久丢了（月度流量会平白少一截）。
+	tmap := make(map[string]trafficDelta, len(uuids))
+	for _, u := range uuids {
+		if d, ok := s.traffic[u]; ok {
+			tmap[u] = d
+			delete(s.traffic, u)
+		}
+	}
+
 	s.mu.Unlock()
 
 	if rolledFrom != "" {
 		log.Printf("[probe] 跨月重置：%s -> %s（北京时间），已清零 %d 台机器的本月流量，%s 的历史数据保留在 traffic_monthly",
 			rolledFrom, month, rolledCount, rolledFrom)
 	}
+
+	if len(uuids) == 0 {
+		// 节流窗口内无可落库机器：一次 SQL 都不发（绝大多数周期都是这种情况）。
+		return
+	}
+
+	// —— 3. 批量事务：把本轮全部写入合并成一次提交 ——
+	// 逐条 db.Exec 时每条 SQL 都是一个独立事务，SQLite 要为每次提交追加 WAL 帧、
+	// 并重复写被修改的页面；2000 台实测每秒近千次提交、持续 7.6MB/s 写入，
+	// 把单核 VPS 的磁盘打满（iowait 48%，进程长期卡在 D 状态）。
+	// 合成一个事务后：提交次数 N 次 → 1 次，同一页面在 WAL 中只落一次，
+	// 写入量降一个数量级，而最终落盘的数据内容与逐条写入完全等价。
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("[probe] Flush 开启事务失败，本轮跳过落库: %v", err)
+		return
+	}
+	committed := false
+	defer func() {
+		// 任何提前 return 都要回滚，避免残留一个未关闭的事务长期占着写锁，
+		// 那会让后续所有 Flush 与 API 写操作全部卡死。
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
 
 	for _, u := range uuids {
 		s.mu.RLock()
@@ -442,11 +635,22 @@ func (s *ServerState) Flush(db *sql.DB, month string) {
 		}
 		s.mu.RUnlock()
 		if !ok {
+			continue // 机器已在本轮之间被删除
+		}
+		if err := UpsertAgentTx(tx, row); err != nil {
+			log.Printf("[probe] Flush 写入机器 %s 失败: %v", u, err)
 			continue
 		}
-		UpsertAgent(db, row)
 		if d, ok := tmap[u]; ok && (d.rx > 0 || d.tx > 0) {
-			AddTraffic(db, u, writeMonth, d.rx, d.tx)
+			if err := AddTrafficTx(tx, u, writeMonth, d.rx, d.tx, now); err != nil {
+				log.Printf("[probe] Flush 写入流量 %s 失败: %v", u, err)
+			}
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("[probe] Flush 提交事务失败，本轮写入已回滚: %v", err)
+		return
+	}
+	committed = true
 }

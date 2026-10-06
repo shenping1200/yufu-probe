@@ -189,14 +189,11 @@ func InitDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// UpsertAgent 写入/更新机器的实时状态（落库用，在线状态以 a.Online 为准）
-func UpsertAgent(db *sql.DB, a AgentRow) error {
-	now := time.Now().Unix()
-	online := 0
-	if a.Online {
-		online = 1
-	}
-	_, err := db.Exec(`INSERT INTO agents
+// upsertAgentSQL 是 agents 表 UPSERT 的唯一 SQL 来源。
+// 刻意抽成常量：批量落库（UpsertAgentTx）与单条落库（UpsertAgent）必须共用同一份 SQL，
+// 一旦两处各自维护、将来只改了其中一处，批量路径写进去的字段就会与单条路径不一致，
+// 表现为"重启前后机器信息对不上"，且极难排查。
+const upsertAgentSQL = `INSERT INTO agents
 		(uuid, alias, hostname, ip, boot_time, uptime, cpu, cpu_count, mem_used, mem_total, disk_used, disk_total, rx_rate, tx_rate, online, last_seen, created_at, country, country_code, os, platform)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(uuid) DO UPDATE SET
@@ -207,22 +204,51 @@ func UpsertAgent(db *sql.DB, a AgentRow) error {
 			country = CASE WHEN excluded.country='' THEN agents.country ELSE excluded.country END,
 			country_code = CASE WHEN excluded.country_code='' THEN agents.country_code ELSE excluded.country_code END,
 			os = CASE WHEN excluded.os='' THEN agents.os ELSE excluded.os END,
-			platform = CASE WHEN excluded.platform='' THEN agents.platform ELSE excluded.platform END`,
-		a.UUID, a.Alias, a.Hostname, a.IP, a.BootTime, a.Uptime, a.CPU, a.CPUCount, a.MemUsed, a.MemTotal,
-		a.DiskUsed, a.DiskTotal, a.RxRate, a.TxRate, online, now, a.CreatedAt, a.Country, a.CountryCode, a.OS, a.Platform)
+			platform = CASE WHEN excluded.platform='' THEN agents.platform ELSE excluded.platform END`
+
+// addTrafficSQL 是 traffic_monthly 表 UPSERT 的唯一 SQL 来源（同上，防双份维护漂移）。
+const addTrafficSQL = `INSERT INTO traffic_monthly (uuid, year_month, rx_total, tx_total, updated_at)
+		VALUES (?,?,?,?,?)
+		ON CONFLICT(uuid, year_month) DO UPDATE SET
+			rx_total = rx_total + excluded.rx_total,
+			tx_total = tx_total + excluded.tx_total,
+			updated_at = excluded.updated_at`
+
+// upsertAgentArgs 按 upsertAgentSQL 的占位符顺序组装参数。
+func upsertAgentArgs(a AgentRow, now int64) []any {
+	online := 0
+	if a.Online {
+		online = 1
+	}
+	return []any{a.UUID, a.Alias, a.Hostname, a.IP, a.BootTime, a.Uptime, a.CPU, a.CPUCount,
+		a.MemUsed, a.MemTotal, a.DiskUsed, a.DiskTotal, a.RxRate, a.TxRate, online, now,
+		a.CreatedAt, a.Country, a.CountryCode, a.OS, a.Platform}
+}
+
+// UpsertAgent 写入/更新机器的实时状态（落库用，在线状态以 a.Online 为准）
+func UpsertAgent(db *sql.DB, a AgentRow) error {
+	_, err := db.Exec(upsertAgentSQL, upsertAgentArgs(a, time.Now().Unix())...)
+	return err
+}
+
+// UpsertAgentTx 与 UpsertAgent 语义完全一致，但在调用方给定的事务内执行。
+// 供 Flush 的批量落库使用：把一轮内成百上千条 UPSERT 合并进同一个事务，
+// 提交次数从 N 次降为 1 次，SQLite 的 WAL 写入量随之下降一个数量级（见 state.go Flush）。
+func UpsertAgentTx(tx *sql.Tx, a AgentRow) error {
+	_, err := tx.Exec(upsertAgentSQL, upsertAgentArgs(a, time.Now().Unix())...)
 	return err
 }
 
 // AddTraffic 将本次上报的流量增量累加到当前自然月
 func AddTraffic(db *sql.DB, uuid, yearMonth string, rxDelta, txDelta float64) error {
-	now := time.Now().Unix()
-	_, err := db.Exec(`INSERT INTO traffic_monthly (uuid, year_month, rx_total, tx_total, updated_at)
-		VALUES (?,?,?,?,?)
-		ON CONFLICT(uuid, year_month) DO UPDATE SET
-			rx_total = rx_total + excluded.rx_total,
-			tx_total = tx_total + excluded.tx_total,
-			updated_at = excluded.updated_at`,
-		uuid, yearMonth, rxDelta, txDelta, now)
+	_, err := db.Exec(addTrafficSQL, uuid, yearMonth, rxDelta, txDelta, time.Now().Unix())
+	return err
+}
+
+// AddTrafficTx 与 AddTraffic 语义一致，但在给定事务内执行（批量落库用）。
+// now 由调用方传入，保证同一批流量行的时间戳一致，便于对账。
+func AddTrafficTx(tx *sql.Tx, uuid, yearMonth string, rxDelta, txDelta float64, now int64) error {
+	_, err := tx.Exec(addTrafficSQL, uuid, yearMonth, rxDelta, txDelta, now)
 	return err
 }
 

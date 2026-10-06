@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,6 +20,9 @@ type Client struct {
 	// closeOnce 保证 send 通道只被关闭一次；viewer 断开时关闭它使 writePump 的 range 循环退出，
 	// 否则 goroutine 会永久阻塞在空通道上（#6 goroutine 泄漏）。
 	closeOnce sync.Once
+	// lastRead 最后成功读取时间（UnixNano），看门狗用：agent 连接若长时间无任何读活动
+	// （对端消失但写缓冲仍接受、safePing 不报错），由 ping 协程主动关闭，避免 goroutine 永久泄漏。
+	lastRead atomic.Int64
 }
 
 // Hub 管理所有 viewer（浏览器）连接，负责向它们广播实时数据；
@@ -47,6 +51,15 @@ func (h *Hub) removeViewer(c *Client) {
 	h.mu.Lock()
 	delete(h.viewers, c)
 	h.mu.Unlock()
+}
+
+// HasViewers 返回当前是否有浏览器（viewer）连接。
+// 用于广播门控（P0 性能修复）：无人观看实时面板时，跳过全量快照的拷贝与 JSON 序列化，
+// 避免每秒白烧 CPU（原本即使无人看，main.go 的 1Hz ticker 也每秒序列化约 1MB 快照）。
+func (h *Hub) HasViewers() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.viewers) > 0
 }
 
 // addAgent 把一台客户端的 WS 连接登记到 uuid 下（终端网关据此找到目标 agent）
@@ -112,12 +125,13 @@ func (c *Client) safeWrite(payload []byte) error {
 
 // safePing 带锁发送 Ping 控制帧，与 safeWrite 共用 writeMu 保证单写者（#7）。
 // 写前设置写超时、写后清除，避免对端不读时永久阻塞并持有 writeMu 卡死该 agent 的全部写入（#顺手）。
-func (c *Client) safePing() {
+// 返回写错误：对端已死（半开/消失）时写会失败，调用方据此主动关闭连接，唤醒 ReadMessage 触发清理，杜绝 goroutine 泄漏。
+func (c *Client) safePing() error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	_ = c.conn.SetWriteDeadline(time.Now().Add(agentWriteTimeout))
 	defer c.conn.SetWriteDeadline(time.Time{})
-	_ = c.conn.WriteMessage(websocket.PingMessage, nil)
+	return c.conn.WriteMessage(websocket.PingMessage, nil)
 }
 
 // viewerWriteTimeout 单帧写出超时。压缩后的全量快照约 285KB，30 秒还写不完

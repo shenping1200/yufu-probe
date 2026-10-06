@@ -296,23 +296,23 @@ function connectWS() {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'agents') {
+      // 全量快照帧：首次连接、每 60 秒的对账帧、管理员操作后的即时推送。
       // 序列号去重：只接受比已应用帧更新的快照，过期/重复帧直接忽略，
       // 彻底消除「改完分组后被旧快照打回原组」的回跳。
       if (typeof msg.seq === 'number' && msg.seq <= lastAgentsSeq) return;
       lastAgentsSeq = msg.seq;
-      // 应用分组乐观覆盖锁：服务端未确认前保持本地分组，陈旧帧打不回原组
-      for (const a of msg.data) {
-        const ov = groupOverrides[a.uuid];
-        if (!ov) continue;
-        if (Date.now() > ov.expires || (msg.seq > ov.floor && a.group === ov.group)) {
-          delete groupOverrides[a.uuid];
-        } else {
-          a.group = ov.group;
-        }
-      }
-      state.agents = msg.data;
+      applyGroupOverrides(msg.data, msg.seq);
+      state.agents = msg.data || [];
       if (Array.isArray(msg.groups)) state.groups = msg.groups;
       updateHistory(msg.data);
+      requestRender();
+    } else if (msg.type === 'agents_delta') {
+      // 增量帧：只包含自上次广播以来真正变化的机器与被删除的机器。
+      // 5000 台时全量快照高达 3.7MB/帧，每秒解析一帧会把浏览器主线程堵死；
+      // 增量帧通常只有几十 KB，面板反而更跟手。
+      if (typeof msg.seq === 'number' && msg.seq <= lastAgentsSeq) return;
+      lastAgentsSeq = msg.seq;
+      applyDelta(msg);
       requestRender();
     }
   };
@@ -322,6 +322,7 @@ function connectWS() {
 }
 
 function updateHistory(list) {
+  if (!list) return;
   for (const a of list) {
     if (!state.history[a.uuid]) state.history[a.uuid] = { rx: [], tx: [] };
     const h = state.history[a.uuid];
@@ -329,6 +330,68 @@ function updateHistory(list) {
     h.tx.push(a.tx_rate);
     if (h.rx.length > 60) { h.rx.shift(); h.tx.shift(); }
   }
+}
+
+// 应用「分组乐观覆盖锁」：管理员刚改完分组、服务端还没确认之前，
+// 用本地值顶住推回来的旧值，避免界面上「改完又跳回原组」。
+// 全量帧与增量帧共用这一套逻辑，保证两条路径行为一致。
+function applyGroupOverrides(list, seq) {
+  if (!list) return;
+  for (const a of list) {
+    const ov = groupOverrides[a.uuid];
+    if (!ov) continue;
+    if (Date.now() > ov.expires || (seq > ov.floor && a.group === ov.group)) {
+      delete groupOverrides[a.uuid];
+    } else {
+      a.group = ov.group;
+    }
+  }
+}
+
+// 落地一帧增量：把 changed 合并进本地状态，把 removed 从本地状态剔除。
+//
+// 为什么可以只推变化量：服务端每秒真正发生变化的机器通常只有几十台（心跳是逐台错峰的），
+// 而全量快照的体积与机器总数成正比（5000 台约 3.7MB）——浏览器每秒解析这么大一坨，
+// 主线程会被 JSON.parse 和随之而来的垃圾回收占满，表现为点按钮发涩、滚动掉帧。
+// 增量帧通常只有几十 KB，服务端与浏览器同时减负，面板反而更跟手。
+//
+// 不会因为丢帧而永久显示错：服务端每 60 秒必定推一帧全量快照做对账（见服务端
+// broadcastAgentsFull 的周期调用），任何偏差最多存在 60 秒就会被自动纠正。
+function applyDelta(msg) {
+  const changed = msg.changed || [];
+  const removed = msg.removed || [];
+  if (!state.agents) state.agents = [];
+
+  applyGroupOverrides(changed, msg.seq);
+
+  // 删除：必须显式处理，否则只推"变化的机器"时，被删掉的机器会永远残留在面板上。
+  if (removed.length) {
+    const rm = new Set(removed);
+    state.agents = state.agents.filter(a => !rm.has(a.uuid));
+    for (const u of removed) delete state.history[u];
+  }
+
+  // 更新/新增：先建 uuid→下标 索引再逐条写入。
+  // 5000 台时若对每条 changed 都用 indexOf/find 查找，是 O(n×m) 的二次复杂度，
+  // 每秒跑一次会明显卡顿；建一次 Map 索引把它压成 O(n+m)。
+  if (changed.length) {
+    const idx = new Map();
+    for (let i = 0; i < state.agents.length; i++) idx.set(state.agents[i].uuid, i);
+    for (const a of changed) {
+      const i = idx.get(a.uuid);
+      if (i === undefined) {
+        idx.set(a.uuid, state.agents.length);
+        state.agents.push(a);
+      } else {
+        state.agents[i] = a;
+      }
+    }
+    // 流量曲线按"实际上报点"采样：机器每 5 秒上报一次就每 5 秒记一点，
+    // 不再像全量帧那样每秒把同一个值重复记 5 遍，曲线不再有重复台阶。
+    updateHistory(changed);
+  }
+
+  if (Array.isArray(msg.groups)) state.groups = msg.groups;
 }
 
 // ---------- 格式化 ----------
