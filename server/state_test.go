@@ -201,11 +201,10 @@ func TestFlushMonthRollover(t *testing.T) {
 
 // TestFlushHeartbeatThrottled 锁死「心跳落库节流」与「重要变化立即落库」两条语义。
 //
-// 这两条是本次规模化改造的核心，任何一边退化都会出事：
-//   - 节流失效 → 2000+ 台机器每秒近千次独立写事务，把单核 VPS 的磁盘打满
-//     （实测持续 7.6MB/s、磁盘等待 48%、进程长期卡在 D 状态）；
-//   - 重要变化被节流 → 管理员刚改完分组/别名，一重启就回退，
-//     这是最容易被用户感知的"丢数据"。
+// 节流一旦失效，2000+ 台机器每秒会产生近千次独立写事务，把单核 VPS 的磁盘打满
+// （实测持续 7.6MB/s、磁盘等待 48%、进程长期卡在 D 状态）；
+// 反过来，重要变化若也被节流，管理员刚改完的状态一重启就回退，
+// 是最容易被用户感知的「丢数据」。两边都不能退化，故分别用例锁住。
 func TestFlushHeartbeatThrottled(t *testing.T) {
 	db, err := InitDB(filepath.Join(t.TempDir(), "probe.db"))
 	if err != nil {

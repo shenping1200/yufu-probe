@@ -44,6 +44,9 @@ jobs:
           if [ -n "$BAD" ]; then
             echo "以下改动文件未格式化（请在本机运行 gofmt -w 后重新提交）:"
             echo "$BAD"
+            # 打印具体差异：只报文件名的话，在没装 Go 的机器上根本无从下手，
+            # 每改一次都要靠 CI 反复试错。给出 diff 可一次定位。
+            gofmt -d $FILES
             exit 1
           fi
           echo "gofmt 检查通过（仅针对本次改动文件）"
