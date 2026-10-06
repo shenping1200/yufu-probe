@@ -179,7 +179,12 @@ func TestFlushMonthRollover(t *testing.T) {
 		t.Fatalf("跨月那一轮不应写入 2026-08，实际 %v", got)
 	}
 
-	// 8 月正常累加
+	// 8 月正常累加。
+	// 注意：心跳类字段现在带 60 秒落库节流（heartbeatPersistSecs），而上面那次跨月 Flush
+	// 刚把 u1 的落库时间刷新成"此刻"，紧接着再 Flush 会被节流跳过、300 写不进库。
+	// 这里把 u1 的节流窗口手动拨回"从未落库"，使本用例专注验证跨月记账语义本身；
+	// 节流行为本身由 TestFlushHeartbeatThrottled 单独锁死。
+	s.lastPersist["u1"] = 0
 	s.ApplyReport(AgentReport{UUID: "u1", RxDelta: 300, TxDelta: 300}, "", "")
 	s.Flush(db, "2026-08")
 
@@ -192,6 +197,69 @@ func TestFlushMonthRollover(t *testing.T) {
 	if got := trafficOf(t, db, "u1", "2026-07"); got != 100 {
 		t.Fatalf("上月历史必须保留为 100，实际 %v", got)
 	}
+}
+
+// TestFlushHeartbeatThrottled 锁死「心跳落库节流」与「重要变化立即落库」两条语义。
+//
+// 这两条是本次规模化改造的核心，任何一边退化都会出事：
+//   - 节流失效 → 2000+ 台机器每秒近千次独立写事务，把单核 VPS 的磁盘打满
+//     （实测持续 7.6MB/s、磁盘等待 48%、进程长期卡在 D 状态）；
+//   - 重要变化被节流 → 管理员刚改完分组/别名，一重启就回退，
+//     这是最容易被用户感知的"丢数据"。
+func TestFlushHeartbeatThrottled(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "probe.db"))
+	if err != nil {
+		t.Fatalf("初始化测试库失败: %v", err)
+	}
+	defer db.Close()
+
+	s := NewServerState()
+	s.lastMonth = "2026-08"
+
+	// 1) 新机器首次上报必须立刻建档：不能因为节流窗口而迟迟不入库，
+	//    否则服务重启后这台机器会凭空消失。
+	s.ApplyReport(AgentReport{UUID: "u-new", Hostname: "host-1"}, "", "")
+	s.Flush(db, "2026-08")
+	if got := countAgents(t, db); got != 1 {
+		t.Fatalf("新机器首次上报应立即建档，实际库内 %d 台", got)
+	}
+
+	// 2) 紧接着的纯心跳上报处在节流窗口内，不应再落库。
+	//    判据：待落库集合仍保留这台机器（真落库了就会被清掉）。
+	s.ApplyReport(AgentReport{UUID: "u-new", Hostname: "host-1", CPU: 12.5}, "", "")
+	s.Flush(db, "2026-08")
+	if got := s.PendingCount(); got != 1 {
+		t.Fatalf("节流窗口内的心跳不应落库，应仍有 1 台待落库，实际 %d", got)
+	}
+
+	// 3) 管理员改动（改分组）必须无视节流窗口、立即落库。
+	group := "分组A"
+	s.UpdateAdmin("u-new", nil, nil, &group, nil)
+	s.Flush(db, "2026-08")
+	if got := s.PendingCount(); got != 0 {
+		t.Fatalf("管理员改动应立即落库，实际仍有 %d 台待落库", got)
+	}
+	if got := groupOf(t, db, "u-new"); got != "分组A" {
+		t.Fatalf("分组应立即写入数据库，实际 %q", got)
+	}
+}
+
+func countAgents(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
+		t.Fatalf("查询机器数失败: %v", err)
+	}
+	return n
+}
+
+func groupOf(t *testing.T, db *sql.DB, uuid string) string {
+	t.Helper()
+	var g sql.NullString
+	if err := db.QueryRow(`SELECT group_name FROM agents WHERE uuid=?`, uuid).Scan(&g); err != nil {
+		t.Fatalf("查询分组失败: %v", err)
+	}
+	return g.String
 }
 
 // trafficOf 读取指定机器指定月份的 rx_total（不存在返回 0）
