@@ -146,6 +146,20 @@ admin:
 db_path: data/probe.db
 EOF
 
+  # 自动部署功能需要用 YUFU_DEPLOY_KEY 加密目标机 SSH 密码后再入库。
+  # 若缺失，建带密码的自动部署规则会返回 HTTP 500（后端加密失败）。
+  # 已存在则复用（避免重装导致旧规则无法解密），否则生成一把 64 位十六进制随机钥匙（32 字节 = AES-256 密钥长度）。
+  if [[ -f docker-compose.yml ]] && grep -q 'YUFU_DEPLOY_KEY=' docker-compose.yml; then
+    DEPLOY_KEY=$(grep 'YUFU_DEPLOY_KEY=' docker-compose.yml | head -1 | sed 's/.*YUFU_DEPLOY_KEY=//' | tr -d ' "')
+    info "复用已存在的 YUFU_DEPLOY_KEY"
+  else
+    if command -v openssl >/dev/null 2>&1; then
+      DEPLOY_KEY=$(openssl rand -hex 32)
+    else
+      DEPLOY_KEY=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    fi
+  fi
+
   # 使用 GHCR 预编译镜像（CI 已编好 amd64/arm64），VPS 零编译、安装更快更稳。
   # 配置 server.yaml 改为运行时挂载，覆盖镜像内置的默认配置。
   cat > docker-compose.yml <<EOF
@@ -158,6 +172,8 @@ services:
     volumes:
       - ./configs/server.yaml:/app/configs/server.yaml:ro
       - probe-data:/app/data
+    environment:
+      - YUFU_DEPLOY_KEY=${DEPLOY_KEY}
     restart: unless-stopped
 EOF
 
