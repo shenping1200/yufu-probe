@@ -56,6 +56,8 @@ function applySort(list, g) {
   const p = getSortPref(g);
   if (p.mode === 'uptime_desc') return [...list].sort((a, b) => (b.uptime || 0) - (a.uptime || 0));
   if (p.mode === 'uptime_asc') return [...list].sort((a, b) => (a.uptime || 0) - (b.uptime || 0));
+  if (p.mode === 'cpu_desc') return [...list].sort((a, b) => (b.cpu || 0) - (a.cpu || 0));
+  if (p.mode === 'cpu_asc') return [...list].sort((a, b) => (a.cpu || 0) - (b.cpu || 0));
   if (p.mode === 'custom') {
     const idx = {}; p.order.forEach((u, i) => { idx[u] = i; });
     return [...list].sort((a, b) => {
@@ -85,9 +87,22 @@ async function cycleUptimeSort() {
   await saveSortPref(g, next, p.order);
   render();
 }
+function cpuSortIcon() {
+  const m = getSortPref(state.currentGroup).mode;
+  return m === 'cpu_desc' ? '↓' : m === 'cpu_asc' ? '↑' : '⇅';
+}
+async function cycleCpuSort() {
+  const g = state.currentGroup;
+  const p = getSortPref(g);
+  const next = p.mode === 'default' ? 'cpu_desc' : p.mode === 'cpu_desc' ? 'cpu_asc' : 'default';
+  await saveSortPref(g, next, p.order);
+  render();
+}
 function bindSortControls() {
   const btn = document.getElementById('sortUptimeBtn');
   if (btn) { btn.textContent = uptimeSortIcon(); btn.onclick = (e) => { e.stopPropagation(); cycleUptimeSort(); }; }
+  const cbtn = document.getElementById('sortCpuBtn');
+  if (cbtn) { cbtn.textContent = cpuSortIcon(); cbtn.onclick = (e) => { e.stopPropagation(); cycleCpuSort(); }; }
 }
 // 拖拽进行中标志：避免 2 秒快照重建 DOM 打断正在进行的拖拽
 let dragActive = false;
@@ -1128,7 +1143,7 @@ function renderList() {
       <tr>
         <th class="sel-td"><label class="sel-only"><input class="sel-chk" type="checkbox" id="selectAllChk" onclick="event.stopPropagation()"></label></th>
         <th>状态</th><th>别名</th><th>位置</th><th>配置</th><th>运行时间 <button class="sort-uptime-btn" id="sortUptimeBtn" type="button" title="切换运行时间排序（默认 / 长→短 / 短→长）">⇅</button></th>
-        <th>使用率</th><th>实时速率</th><th>本月流量</th><th style="width:1%;white-space:nowrap">操作</th>
+        <th>使用率 <button class="sort-uptime-btn" id="sortCpuBtn" type="button" title="切换 CPU 使用率排序（默认 / 高→低 / 低→高）">⇅</button></th><th>实时速率</th><th>本月流量</th><th style="width:1%;white-space:nowrap">操作</th>
       </tr>
     </thead>`;
   if (list.length === 0) {
