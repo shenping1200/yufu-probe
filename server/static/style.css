@@ -683,6 +683,9 @@ button.danger:hover { background: var(--danger); color: #fff; }
 .pg-nav button:hover:not(:disabled) { border-color: var(--primary); color: var(--text); }
 .pg-nav button:disabled { opacity: .45; cursor: not-allowed; }
 .pg-info { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
+.pg-jump-input { width: 56px; padding: 6px 8px; font-size: 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-2); color: var(--text); outline: none; }
+.pg-jump-input:focus { border-color: var(--primary); }
 
 /* 自动部署规则 */
 .deploy-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; margin: 4px 0; }

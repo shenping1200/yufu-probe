@@ -677,7 +677,14 @@ function renderPager() {
   const customVal = (ps !== 'all' && ![10, 20, 50].includes(ps)) ? ps : '';
   let html = `<div class="pg-sizes">每页：<span class="pg-size-wrap">${[10, 20, 50, 'all'].map(sizeBtn).join('')}</span><input class="pg-custom" type="number" min="1" placeholder="自定义" value="${customVal}"></div>`;
   if (ps !== 'all' && total > ps) {
-    html += `<div class="pg-nav"><button class="pg-prev" ${cur <= 1 ? 'disabled' : ''}>上一页</button><span class="pg-info">第 ${cur} / ${pageCount} 页 · 共 ${total} 台</span><button class="pg-next" ${cur >= pageCount ? 'disabled' : ''}>下一页</button></div>`;
+    html += `<div class="pg-nav">` +
+      `<button class="pg-first" ${cur <= 1 ? 'disabled' : ''}>首页</button>` +
+      `<button class="pg-prev" ${cur <= 1 ? 'disabled' : ''}>上一页</button>` +
+      `<span class="pg-info">第 ${cur} / ${pageCount} 页 · 共 ${total} 台</span>` +
+      `<button class="pg-next" ${cur >= pageCount ? 'disabled' : ''}>下一页</button>` +
+      `<button class="pg-last" ${cur >= pageCount ? 'disabled' : ''}>末页</button>` +
+      `<span class="pg-jump">跳至 <input class="pg-jump-input" type="number" min="1" max="${pageCount}" value="${cur}"> 页 <button class="pg-jump-btn">跳转</button></span>` +
+      `</div>`;
   } else {
     html += `<div class="pg-nav"><span class="pg-info">共 ${total} 台</span></div>`;
   }
@@ -712,6 +719,28 @@ function renderPager() {
   if (prev) prev.onclick = () => { if (state.page > 1) { state.page--; agentsScrollEl.scrollTop = 0; lastPagerSig = ''; requestRender(); } };
   const next = bar.querySelector('.pg-next');
   if (next) next.onclick = () => { if (state.page < pageCount) { state.page++; agentsScrollEl.scrollTop = 0; lastPagerSig = ''; requestRender(); } };
+  const first = bar.querySelector('.pg-first');
+  if (first) first.onclick = () => { if (state.page > 1) { state.page = 1; agentsScrollEl.scrollTop = 0; lastPagerSig = ''; requestRender(); } };
+  const last = bar.querySelector('.pg-last');
+  if (last) last.onclick = () => { if (state.page < pageCount) { state.page = pageCount; agentsScrollEl.scrollTop = 0; lastPagerSig = ''; requestRender(); } };
+  const jumpInput = bar.querySelector('.pg-jump-input');
+  const jumpBtn = bar.querySelector('.pg-jump-btn');
+  const doJump = () => {
+    const n = parseInt(jumpInput.value, 10);
+    if (n && n >= 1 && n <= pageCount) {
+      state.page = n;
+      agentsScrollEl.scrollTop = 0;
+      lastPagerSig = '';
+      requestRender();
+    } else {
+      jumpInput.value = cur;
+    }
+  };
+  if (jumpBtn) jumpBtn.onclick = doJump;
+  if (jumpInput) {
+    jumpInput.onchange = doJump;
+    jumpInput.onkeydown = (e) => { if (e.key === 'Enter') jumpInput.blur(); };
+  }
 }
 
 // 渲染顶部筛选标签条：全部(总数) / 已注册自定义组(数量) / 未分组 / ⚠ 离线(数量) / + 新建分组
