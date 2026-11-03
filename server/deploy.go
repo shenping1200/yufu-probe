@@ -428,10 +428,10 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 			sem := make(chan struct{}, cap)
 			var wg sync.WaitGroup
 			for _, uuid := range cands {
-			// 细粒度复检：派发前若被暂停，不再向新机器下发（已下发在途的让它跑完）
-			if isPaused() {
-				break
-			}
+				// 细粒度复检：派发前若被暂停，不再向新机器下发（已下发在途的让它跑完）
+				if isPaused() {
+					break
+				}
 				mu.Lock()
 				if _, ok := inFlight[uuid]; ok {
 					mu.Unlock()
@@ -451,21 +451,21 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 						delete(inFlight, u)
 						mu.Unlock()
 					}()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+					sem <- struct{}{}
+					defer func() { <-sem }()
 
-			// 暂停复检：本机拿到信号量、准备真正下发前再判一次暂停。
-			// 优雅收尾下，在途机器跑完后释放信号量，排队机器拿到槽位时若已暂停就跳过，
-			// 不新开部署；等当前这一批在途机器全部收尾后，下一轮 tick 直接整体跳过。
-			if isPaused() {
-					log.Printf("[deploy] 规则 %d 机器 %s 因自动部署已暂停，跳过下发（恢复后下轮重试）", rule.ID, u)
-					return
-				}
+					// 暂停复检：本机拿到信号量、准备真正下发前再判一次暂停。
+					// 优雅收尾下，在途机器跑完后释放信号量，排队机器拿到槽位时若已暂停就跳过，
+					// 不新开部署；等当前这一批在途机器全部收尾后，下一轮 tick 直接整体跳过。
+					if isPaused() {
+						log.Printf("[deploy] 规则 %d 机器 %s 因自动部署已暂停，跳过下发（恢复后下轮重试）", rule.ID, u)
+						return
+					}
 
-				agent := hub.findAgent(u)
-				if agent == nil {
-					return // 离线，下一轮再试
-				}
+					agent := hub.findAgent(u)
+					if agent == nil {
+						return // 离线，下一轮再试
+					}
 
 					// 用带硬超时的 goroutine 包裹 runExec：即便某次下发在底层（如 safeWrite）
 					// 卡死，外层 select 也能兜底返回，绝不让 ticker 循环冻结。
@@ -481,22 +481,22 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 								resCh <- ExecResult{UUID: u, Status: "error", Error: "内部错误"}
 							}
 						}()
-					resCh <- runExec(agent, u, rule.Command, execTimeout)
-				}()
-				var res ExecResult
-				select {
-				case res = <-resCh:
-				case <-time.After(execTimeout + 10*time.Second):
-					res = ExecResult{UUID: u, Status: "timeout", Error: "部署执行超出硬超时"}
-					log.Printf("[deploy] 规则 %d 机器 %s 执行超出硬超时（放弃本机，下轮重试）", rule.ID, u)
-				}
-			log.Printf("[deploy] 规则 %d 机器 %s 执行结果: status=%s exit=%d", rule.ID, u, res.Status, res.ExitCode)
+						resCh <- runExec(agent, u, rule.Command, execTimeout)
+					}()
+					var res ExecResult
+					select {
+					case res = <-resCh:
+					case <-time.After(execTimeout + 10*time.Second):
+						res = ExecResult{UUID: u, Status: "timeout", Error: "部署执行超出硬超时"}
+						log.Printf("[deploy] 规则 %d 机器 %s 执行超出硬超时（放弃本机，下轮重试）", rule.ID, u)
+					}
+					log.Printf("[deploy] 规则 %d 机器 %s 执行结果: status=%s exit=%d", rule.ID, u, res.Status, res.ExitCode)
 
-			// 注：自动部署「停止」采用优雅收尾，不会向 runExec 注入中止信号，
-			// 因此这里不会再收到 aborted 状态；在途机器一定以 ok/error/timeout 自然收尾，
-			// 并按成功/失败正常落库（done/failed）。无需为「被中止」做特殊跳过。
+					// 注：自动部署「停止」采用优雅收尾，不会向 runExec 注入中止信号，
+					// 因此这里不会再收到 aborted 状态；在途机器一定以 ok/error/timeout 自然收尾，
+					// 并按成功/失败正常落库（done/failed）。无需为「被中止」做特殊跳过。
 
-			success := res.Status == "ok" && res.ExitCode == 0
+					success := res.Status == "ok" && res.ExitCode == 0
 
 					// 状态更新同样置于硬超时保护下：DB 写入或 live 变更若意外挂起，
 					// 最多 20s 后放弃，保证 wg.Done 必然执行、循环不会冻结。
