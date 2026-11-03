@@ -7,11 +7,13 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,9 +28,56 @@ import (
 // 因此不必要求用户精确输入 32 字节；但必须设置，否则无法解密已存密码。
 const deployKeyEnv = "YUFU_DEPLOY_KEY"
 
+// deployKeyFileRel 未设置环境变量时，密钥持久化文件的默认相对路径。
+// 相对容器工作目录（/app），落在数据卷 /app/data 内，重启或重建容器都不会丢。
+const deployKeyFileRel = "data/.deploy_key"
+
+// deployKeyFilePath 返回密钥文件路径；可用 YUFU_DEPLOY_KEY_FILE 覆盖（便于自定义部署目录）。
+func deployKeyFilePath() string {
+	if p := strings.TrimSpace(os.Getenv("YUFU_DEPLOY_KEY_FILE")); p != "" {
+		return p
+	}
+	return deployKeyFileRel
+}
+
+// loadOrCreateDeployKey 在未显式设置 YUFU_DEPLOY_KEY 时兜底：
+// 优先读取持久化密钥文件，不存在则生成 32 字节随机密钥并落盘（0600）。
+// 这样「直接 git clone 后 docker compose up」等没注入环境变量的安装方式，
+// 也不会因为密钥缺失导致保存自动部署规则返回 HTTP 500。
+func loadOrCreateDeployKey() (string, error) {
+	path := deployKeyFilePath()
+	if b, err := os.ReadFile(path); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	key := hex.EncodeToString(buf)
+	if err := os.WriteFile(path, []byte(key+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	log.Printf("[deploy] 未设置 %s，已自动生成持久化密钥文件 %s（想自定义请设置该环境变量）", deployKeyEnv, path)
+	return key, nil
+}
+
 func deployKey() ([]byte, error) {
-	raw := os.Getenv(deployKeyEnv)
-	if strings.TrimSpace(raw) == "" {
+	raw := strings.TrimSpace(os.Getenv(deployKeyEnv))
+	if raw == "" {
+		auto, err := loadOrCreateDeployKey()
+		if err != nil {
+			return nil, errors.New(deployKeyEnv + " 未设置，且自动生成密钥文件失败: " + err.Error())
+		}
+		raw = strings.TrimSpace(auto)
+	}
+	if raw == "" {
 		return nil, errors.New(deployKeyEnv + " 未设置，无法加解密自动部署密码")
 	}
 	sum := sha256.Sum256([]byte(raw))
@@ -306,8 +355,8 @@ func effectiveSSHPassword(cfg *Config) string {
 func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 	inFlight := make(map[string]struct{})
 	var mu sync.Mutex
-	if os.Getenv(deployKeyEnv) == "" {
-		log.Printf("[deploy] 警告：%s 未设置，已存密码的规则将无法解密（这些规则不会执行）", deployKeyEnv)
+	if strings.TrimSpace(os.Getenv(deployKeyEnv)) == "" {
+		log.Printf("[deploy] 未设置 %s，将使用/自动生成持久化密钥文件 %s", deployKeyEnv, deployKeyFilePath())
 	}
 	eff := effectiveSSHPassword(cfg)
 	if eff == "" {

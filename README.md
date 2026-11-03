@@ -257,7 +257,7 @@ docker compose exec server probe-server unlock <uuid>    # 仅解封某台
 - **全局「暂停 / 恢复自动部署」总开关**（弹窗顶部）：暂停 = 仅停止扫描调度、**全部规则配置原样保留**；下次点恢复即继续工作，无需重建规则。这是「停止任务后规则不丢失（自动保存配置）」的实现方式。
 - **改分组重置部署状态**：管理员把一台机器拖入 / 移出分组时，其 `deploy_state` 终态会被清空。因此「把已部署过的机器重新拖回源分组」会再次触发部署，符合直觉。
 
-> 说明：规则密码的 AES-GCM 密钥取自环境变量 **`YUFU_DEPLOY_KEY`**（任意字符串经 SHA-256 派生为 32 字节）。该变量需在服务端容器的运行环境注入（见 `docker-compose.yml`），缺失时无法加解密规则密码。数据库只存 `base64(nonce + ciphertext)`，明文密码不落盘。
+> 说明：规则密码的 AES-GCM 密钥取自环境变量 **`YUFU_DEPLOY_KEY`**（任意字符串经 SHA-256 派生为 32 字节）。该变量在服务端容器的运行环境注入（见 `docker-compose.yml`）。**未设置时会自动生成 `data/.deploy_key` 持久化密钥文件并复用**（可用 `YUFU_DEPLOY_KEY_FILE` 指定路径），因此不会因漏配而保存失败；数据库只存 `base64(nonce + ciphertext)`，明文密码不落盘。
 
 ## 本地升级（已安装的服务端）
 
@@ -383,7 +383,7 @@ docker build -f Dockerfile.agent -t yufu-probe-agent .
 | `admin.username` / `admin.password` | Web 登录账号 |
 | `db_path` | SQLite 数据库文件路径（含 `ssh_lock` 锁定表） |
 
-> **环境变量 `YUFU_DEPLOY_KEY`**：自动部署规则密码的 AES-GCM 加密密钥（任意字符串经 SHA-256 派生为 32 字节）。经服务端容器 `environment` 注入（见 `docker-compose.yml`），缺失时无法正常加解密规则密码。
+> **环境变量 `YUFU_DEPLOY_KEY`**：自动部署规则密码的 AES-GCM 加密密钥（任意字符串经 SHA-256 派生为 32 字节）。经服务端容器 `environment` 注入（见 `docker-compose.yml`）。未注入时服务端会自动生成 `data/.deploy_key` 并持久化复用（可用 `YUFU_DEPLOY_KEY_FILE` 改路径），保证直接 `docker compose up` 也能正常加密保存规则。
 
 `configs/agent.yaml`：`server`（ws/wss 地址）、`token`、`interval`（秒）、`iface`（监控网卡，留空自动选）、`uuid_file`（UUID 持久化路径）。
 
