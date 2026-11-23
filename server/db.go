@@ -134,6 +134,7 @@ func InitDB(path string) (*sql.DB, error) {
 			concurrency INTEGER DEFAULT 50,
 			timeout INTEGER DEFAULT 60,
 			ssh_password_enc TEXT DEFAULT '',
+			success_keywords TEXT DEFAULT '',
 			created_at INTEGER DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS kv (

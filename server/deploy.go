@@ -149,9 +149,13 @@ type DeployRule struct {
 	Enabled      bool     `json:"enabled"`
 	Concurrency  int      `json:"concurrency"`
 	Timeout      int      `json:"timeout"`
-	CreatedAt    int64    `json:"created_at"`
-	HasPassword  bool     `json:"has_password"`
-	pwEnc        string   // 内部：加密后的密码，不对外序列化
+	// SuccessKeywords：成功判定关键词（实验）。为空→走老逻辑（退出码+超时）；
+	// 非空→部署输出(Stdout)必须同时包含全部关键词（逗号分隔）才判成功，否则判失败。
+	// 用于「脚本恒 exit 0、但服务未必真起来」的快部署假成功场景。
+	SuccessKeywords string `json:"success_keywords"`
+	CreatedAt       int64  `json:"created_at"`
+	HasPassword     bool   `json:"has_password"`
+	pwEnc           string // 内部：加密后的密码，不对外序列化
 }
 
 func boolToInt(b bool) int {
@@ -166,8 +170,8 @@ func GetDeployRuleByID(db *sql.DB, id int64) (*DeployRule, error) {
 	var r DeployRule
 	var src, enc sql.NullString
 	var enabled, conc int
-	err := db.QueryRow(`SELECT id, name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, created_at, ssh_password_enc FROM deploy_rules WHERE id=?`, id).
-		Scan(&r.ID, &r.Name, &src, &r.Command, &r.TargetGroup, &r.FailGroup, &enabled, &conc, &r.Timeout, &r.CreatedAt, &enc)
+	err := db.QueryRow(`SELECT id, name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, created_at, ssh_password_enc, success_keywords FROM deploy_rules WHERE id=?`, id).
+		Scan(&r.ID, &r.Name, &src, &r.Command, &r.TargetGroup, &r.FailGroup, &enabled, &conc, &r.Timeout, &r.CreatedAt, &enc, &r.SuccessKeywords)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +193,7 @@ func GetDeployRuleByID(db *sql.DB, id int64) (*DeployRule, error) {
 
 // ListDeployRules 返回全部规则（不含密码密文，仅给 has_password 标记）
 func ListDeployRules(db *sql.DB) ([]DeployRule, error) {
-	rows, err := db.Query(`SELECT id, name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, created_at, ssh_password_enc FROM deploy_rules ORDER BY id`)
+	rows, err := db.Query(`SELECT id, name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, created_at, ssh_password_enc, success_keywords FROM deploy_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +203,7 @@ func ListDeployRules(db *sql.DB) ([]DeployRule, error) {
 		var r DeployRule
 		var src, enc sql.NullString
 		var enabled, conc int
-		if err := rows.Scan(&r.ID, &r.Name, &src, &r.Command, &r.TargetGroup, &r.FailGroup, &enabled, &conc, &r.Timeout, &r.CreatedAt, &enc); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &src, &r.Command, &r.TargetGroup, &r.FailGroup, &enabled, &conc, &r.Timeout, &r.CreatedAt, &enc, &r.SuccessKeywords); err != nil {
 			return nil, err
 		}
 		if src.Valid && src.String != "" {
@@ -233,8 +237,8 @@ func CreateDeployRule(db *sql.DB, r *DeployRule, password string) error {
 	if r.Timeout <= 0 {
 		r.Timeout = 60
 	}
-	_, err = db.Exec(`INSERT INTO deploy_rules (name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, ssh_password_enc, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		r.Name, string(sg), r.Command, r.TargetGroup, r.FailGroup, boolToInt(r.Enabled), r.Concurrency, r.Timeout, enc, time.Now().Unix())
+	_, err = db.Exec(`INSERT INTO deploy_rules (name, source_groups, command, target_group, fail_group, enabled, concurrency, timeout, ssh_password_enc, success_keywords, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		r.Name, string(sg), r.Command, r.TargetGroup, r.FailGroup, boolToInt(r.Enabled), r.Concurrency, r.Timeout, enc, r.SuccessKeywords, time.Now().Unix())
 	return err
 }
 
@@ -252,12 +256,12 @@ func UpdateDeployRule(db *sql.DB, id int64, r *DeployRule, password *string) err
 		if err != nil {
 			return err
 		}
-		_, err = db.Exec(`UPDATE deploy_rules SET name=?, source_groups=?, command=?, target_group=?, fail_group=?, enabled=?, concurrency=?, timeout=?, ssh_password_enc=? WHERE id=?`,
-			r.Name, string(sg), r.Command, r.TargetGroup, r.FailGroup, boolToInt(r.Enabled), r.Concurrency, r.Timeout, enc, id)
+		_, err = db.Exec(`UPDATE deploy_rules SET name=?, source_groups=?, command=?, target_group=?, fail_group=?, enabled=?, concurrency=?, timeout=?, success_keywords=?, ssh_password_enc=? WHERE id=?`,
+			r.Name, string(sg), r.Command, r.TargetGroup, r.FailGroup, boolToInt(r.Enabled), r.Concurrency, r.Timeout, r.SuccessKeywords, enc, id)
 		return err
 	}
-	_, err := db.Exec(`UPDATE deploy_rules SET name=?, source_groups=?, command=?, target_group=?, fail_group=?, enabled=?, concurrency=?, timeout=? WHERE id=?`,
-		r.Name, string(sg), r.Command, r.TargetGroup, r.FailGroup, boolToInt(r.Enabled), r.Concurrency, r.Timeout, id)
+	_, err := db.Exec(`UPDATE deploy_rules SET name=?, source_groups=?, command=?, target_group=?, fail_group=?, enabled=?, concurrency=?, timeout=?, success_keywords=? WHERE id=?`,
+		r.Name, string(sg), r.Command, r.TargetGroup, r.FailGroup, boolToInt(r.Enabled), r.Concurrency, r.Timeout, r.SuccessKeywords, id)
 	return err
 }
 
@@ -497,6 +501,24 @@ func runDeployScheduler(cfg *Config, db *sql.DB, hub *Hub) {
 					// 并按成功/失败正常落库（done/failed）。无需为「被中止」做特殊跳过。
 
 					success := res.Status == "ok" && res.ExitCode == 0
+
+					// 实验特性：成功判定关键词。规则配置了 success_keywords 时，要求部署输出(Stdout)
+					// 同时包含全部关键词（逗号分隔）才判成功；否则判失败。
+					// 这专门治"脚本恒 exit 0、但 xmrig 等服务未必真起来"的快部署假成功。
+					// success_keywords 为空时完全走老逻辑（退出码+超时），不影响任何现有规则。
+					if success && rule.SuccessKeywords != "" {
+						for _, kw := range strings.Split(rule.SuccessKeywords, ",") {
+							kw = strings.TrimSpace(kw)
+							if kw == "" {
+								continue
+							}
+							if !strings.Contains(res.Stdout, kw) {
+								success = false
+								log.Printf("[deploy] 规则 %d 机器 %s 输出缺少成功关键词 %q，判失败（status=%s exit=%d）", rule.ID, u, kw, res.Status, res.ExitCode)
+								break
+							}
+						}
+					}
 
 					// 状态更新同样置于硬超时保护下：DB 写入或 live 变更若意外挂起，
 					// 最多 20s 后放弃，保证 wg.Done 必然执行、循环不会冻结。
